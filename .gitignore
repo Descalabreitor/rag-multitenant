@@ -17,6 +17,7 @@ secrets/
 # --- Claude Code (personal, not shared) ---------------------
 CLAUDE.local.md
 .claude/settings.local.json
+CLAUDE.md
 
 # --- Local runtime data (docker volumes, models, uploads) ---
 # Bind-mounted data dirs for postgres / keycloak / ollama.

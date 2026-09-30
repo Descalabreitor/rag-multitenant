@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ragmt"
+version = "0.1.0"
+description = "Multi-tenant RAG service with isolation enforced by PostgreSQL Row-Level Security."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Adrian Perera Moreno" }]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    "pyjwt[crypto]>=2.9",
+    "httpx>=0.27",
+    # The ingestion `engine/` package (file-to-Markdown converter) is added
+    # once its distribution source is decided.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.100",
+    "testcontainers[postgres]>=4.8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ragmt"]
+
+# --- ruff ----------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "S",        # bandit (security)
+    "ASYNC",    # async pitfalls
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest works
+
+# --- mypy ----------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+strict = true
+plugins = ["pydantic.mypy"]
+
+# --- pytest --------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["-ra", "--strict-markers"]
+markers = [
+    "db: needs a running PostgreSQL with pgvector",
+    "leaks: isolation leak suite",
+]
