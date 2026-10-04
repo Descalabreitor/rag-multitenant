@@ -4,11 +4,11 @@ A retrieval-augmented generation service for multiple organizations, where **no 
 
 The goal is to show, with numbers, what it takes to make permission-aware RAG trustworthy: a leak-test suite (cross-tenant queries, JWT tampering, connection-pool reuse, revocation, prompt injection, property-based tests), recall under restrictive filters, and the latency cost of doing it right.
 
-> 🚧 **Work in progress, developed in the open.** The scaffold, the local development stack and CI are in place; the database schema and RLS policies are next. Measured results will land in [`docs/results/`](docs/results/).
+> This is a work in progress, built in the open. The scaffold, the local development stack and CI are in place; the database schema and RLS policies are next. Measured results will land in [`docs/results/`](docs/results/).
 
 ## Design decisions
 
-Key decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
+Decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
 
 - [0001. Pre-filtering with PostgreSQL Row-Level Security](docs/adr/0001-pre-filtering-with-postgres-rls.md)
 - [0002. Resolve group memberships in the database](docs/adr/0002-resolve-group-memberships-in-the-database.md)
@@ -16,11 +16,11 @@ Key decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
 
 ## How access control works
 
-- **Two levels of permissions.** Tenants (one Keycloak Organization each) are fully isolated from each other. Inside a tenant, each document has an ACL of users, groups or the whole tenant.
-- **The database is the gatekeeper.** Every tenant table has `FORCE ROW LEVEL SECURITY`, and the API connects with a role that cannot bypass it. The tenant and the user's principals are set per transaction (`SET LOCAL`), so pooled connections can't leak context. With no context set, queries return nothing.
-- **Identity from OIDC, permissions from the database.** The JWT proves who you are. What you can read is resolved from memberships synced from Keycloak, so revoking access doesn't wait for tokens to expire.
-- **The LLM only sees what you could already read.** It has no tools and no database access, and retrieved text is treated as untrusted data.
-- **Every retrieval is audited** in an insert-only log.
+- There are two levels of permissions. Tenants (one Keycloak Organization each) are fully isolated from each other, and inside a tenant each document has an ACL of users, groups or the whole tenant.
+- PostgreSQL enforces access. Every tenant table has `FORCE ROW LEVEL SECURITY`, and the API connects with a role that cannot bypass it. The tenant and the user's principals are set per transaction (`SET LOCAL`), so pooled connections can't leak context. With no context set, queries return nothing.
+- The JWT proves who you are, but what you can read is resolved from memberships synced from Keycloak, so revoking access doesn't wait for tokens to expire.
+- The LLM only sees chunks you could already read. It has no tools and no database access, and retrieved text is treated as untrusted data.
+- Every retrieval is written to an insert-only audit log.
 
 ## What will be measured
 
@@ -63,7 +63,7 @@ Tests marked `db` need PostgreSQL running. The connection URLs are read from `.e
 - [ ] Ingestion: documents → Markdown → chunks → embeddings, with ACLs
 - [ ] Retrieval and answer generation with citations, plus audit log
 - [ ] Revocation and deletion (GDPR erasure) with measured propagation time
-- [ ] Leak-test suite and benchmarks → `docs/results/`
+- [ ] Leak-test suite and benchmarks, published in `docs/results/`
 - [ ] *(optional)* Relationship-based permissions with OpenFGA
 
 ## License

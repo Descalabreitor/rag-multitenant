@@ -63,6 +63,9 @@ jobs:
       - name: Start PostgreSQL + pgvector
         run: docker compose up -d --wait --wait-timeout 120 postgres
 
+      - name: Apply migrations (as migrator)
+        run: alembic upgrade head
+
       - run: pytest
 
       - name: Container logs on failure

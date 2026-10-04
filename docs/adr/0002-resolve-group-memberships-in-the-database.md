@@ -22,4 +22,4 @@ The token provides identity only: `sub` and organization (tenant). Group members
 - **Pro:** Revocation latency depends on the sync interval, which is under our control and can be measured. It is one of the figures reported in the README.
 - **Con:** Adds a component (`permsync`) and one extra query per request. The query is cheap: a small, indexed table.
 - **Con:** If `permsync` stops, permissions freeze in their last state. The time since the last successful sync must be monitored.
-- **Note:** The benchmarks should include a measured comparison of options A and C, so the decision rests on data rather than opinion.
+- **Note:** The benchmarks should include a measured comparison of options A and C, so the decision is backed by measurements.
