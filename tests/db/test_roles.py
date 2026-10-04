@@ -7,13 +7,15 @@ from tests.db.pg import dsn, fetchrow
 pytestmark = pytest.mark.db
 
 
-async def test_app_role_cannot_bypass_rls() -> None:
+@pytest.mark.parametrize("var", ["DATABASE_URL", "INGEST_DATABASE_URL"])
+async def test_runtime_roles_cannot_bypass_rls(var: str) -> None:
     row = await fetchrow(
-        dsn("DATABASE_URL"),
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        dsn(var),
+        "SELECT rolsuper, rolbypassrls, rolinherit FROM pg_roles WHERE rolname = current_user",
     )
     assert row["rolsuper"] is False
     assert row["rolbypassrls"] is False
+    assert row["rolinherit"] is False
 
 
 async def test_migrator_is_not_superuser() -> None:
