@@ -14,7 +14,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
-    "pydantic-settings>=2.4",
+    "pydantic-settings>=2.7",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "alembic>=1.13",
@@ -56,6 +56,9 @@ select = [
     "RUF",
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["ragmt", "seed", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # assert is how pytest works
 # Migrations build DDL and policy SQL from module-level constants; no input reaches them.
@@ -64,7 +67,7 @@ select = [
 # --- mypy ----------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
-files = ["src"]
+files = ["src", "seed"]
 strict = true
 plugins = ["pydantic.mypy"]
 

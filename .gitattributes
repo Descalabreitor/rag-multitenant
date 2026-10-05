@@ -1,3 +1,5 @@
 * text=auto
 # Shell scripts run inside Linux containers; CRLF would break them.
 *.sh text eol=lf
+# make requires tabs and LF.
+Makefile text eol=lf
