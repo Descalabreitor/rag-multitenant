@@ -9,23 +9,21 @@ import asyncpg
 import pytest
 
 from tests.db.pg import dsn, session
-from tests.leaks.conftest import EMBEDDING, INGEST, World, canary, insert_chunk
+from tests.leaks.conftest import (
+    EMBEDDING,
+    INGEST,
+    READER,
+    World,
+    canaries,
+    canary,
+    insert_chunk,
+    visible_chunks,
+)
 
 pytestmark = [pytest.mark.db, pytest.mark.leaks]
 
-READER = "DATABASE_URL"
 MIGRATOR = "MIGRATOR_DATABASE_URL"
 TABLES = ("tenants", "memberships", "documents", "document_acl", "chunks")
-
-
-async def visible_chunks(tenant: UUID, user: str | None) -> set[str]:
-    async with session(READER, tenant, user) as conn:
-        rows = await conn.fetch("SELECT content FROM chunks")
-    return {row["content"] for row in rows}
-
-
-def canaries(*documents: str) -> set[str]:
-    return {canary(d) for d in documents}
 
 
 # --- context ------------------------------------------------------------------

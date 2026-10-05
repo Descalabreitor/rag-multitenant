@@ -18,6 +18,7 @@ import pytest
 
 from tests.db.pg import session
 
+READER = "DATABASE_URL"
 INGEST = "INGEST_DATABASE_URL"
 
 # Any vector of the right size will do: these tests check who sees a row, not ranking.
@@ -44,6 +45,17 @@ class World:
 def canary(document: str) -> str:
     """Content of every chunk of `document`: a unique string a leak would expose."""
     return f"CANARY-{document}"
+
+
+def canaries(*documents: str) -> set[str]:
+    return {canary(d) for d in documents}
+
+
+async def visible_chunks(tenant: UUID, user: str | None) -> set[str]:
+    """Chunk contents `user` can read in `tenant` through app_rw, as a user request would."""
+    async with session(READER, tenant, user) as conn:
+        rows = await conn.fetch("SELECT content FROM chunks")
+    return {row["content"] for row in rows}
 
 
 async def insert_chunk(
