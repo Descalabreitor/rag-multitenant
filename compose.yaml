@@ -61,6 +61,32 @@ services:
       retries: 30
       start_period: 30s
 
+  # Keycloak groups -> memberships every PERMSYNC_INTERVAL_SECONDS (ADR 0002, ADR 0007).
+  # Needs the schema in place (make migrate); until then each cycle fails and is retried.
+  permsync:
+    build: .
+    command: ["python", "-m", "ragmt.permsync"]
+    # Python as PID 1 ignores SIGTERM; tini forwards it so `docker compose stop` is quick.
+    init: true
+    restart: unless-stopped
+    environment:
+      # Only the writer role's password reaches this container (ADR 0004).
+      INGEST_DATABASE_URL: postgresql+asyncpg://app_ingest:${APP_INGEST_PASSWORD:?set APP_INGEST_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-ragmt}
+      # Settings requires it, but permsync never connects as app_rw. No password, on purpose.
+      DATABASE_URL: postgresql+asyncpg://app_rw@postgres:5432/${POSTGRES_DB:-ragmt}
+      # The realm comes from the issuer; the container reaches Keycloak by its service name.
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8080/realms/ragmt}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-ragmt-api}
+      PERMSYNC_KEYCLOAK_URL: http://keycloak:8080
+      PERMSYNC_CLIENT_ID: ${PERMSYNC_CLIENT_ID:-ragmt-permsync}
+      PERMSYNC_CLIENT_SECRET: ${PERMSYNC_CLIENT_SECRET:?set PERMSYNC_CLIENT_SECRET in .env}
+      PERMSYNC_INTERVAL_SECONDS: ${PERMSYNC_INTERVAL_SECONDS:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
   ollama:
     image: ollama/ollama:latest
     ports:

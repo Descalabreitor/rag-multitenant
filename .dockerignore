@@ -1,0 +1,14 @@
+# The Dockerfile copies only pyproject.toml, README.md, LICENSE and src/. This
+# keeps everything else, secrets first, out of the build context.
+.env
+.env.*
+.git
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.hypothesis
+eval
+docs
+tests
+seed
