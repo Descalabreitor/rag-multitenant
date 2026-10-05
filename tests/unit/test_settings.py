@@ -121,3 +121,25 @@ def test_empty_or_non_positive_values_are_rejected(
     monkeypatch.setenv(variable, value)
     with pytest.raises(ValidationError, match=variable.lower()):
         load()
+
+
+def test_permsync_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PERMSYNC_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("PERMSYNC_KEYCLOAK_URL", raising=False)
+    settings = load()
+    assert settings.permsync_interval_seconds == 60
+    assert settings.permsync_keycloak_url is None
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_permsync_interval_must_be_positive(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("PERMSYNC_INTERVAL_SECONDS", value)
+    with pytest.raises(ValidationError, match="permsync_interval_seconds"):
+        load()
+
+
+@pytest.mark.parametrize("url", ["keycloak:8080", "ftp://keycloak:8080"])
+def test_permsync_keycloak_url_must_be_http(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    monkeypatch.setenv("PERMSYNC_KEYCLOAK_URL", url)
+    with pytest.raises(ValidationError, match="permsync_keycloak_url"):
+        load()

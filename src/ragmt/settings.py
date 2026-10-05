@@ -25,6 +25,12 @@ SAFE_ALGORITHMS = frozenset(
 _ASYNC_DRIVER = "postgresql+asyncpg"
 
 
+def _require_http_url(value: str) -> None:
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("must be an http(s) URL")
+
+
 class Settings(BaseSettings):
     """Everything the application reads from its environment. Values are immutable."""
 
@@ -53,6 +59,13 @@ class Settings(BaseSettings):
     # --- permsync (Keycloak service account) -----------------------------------
     permsync_client_id: str = Field(min_length=1)
     permsync_client_secret: SecretStr
+    # Keycloak's base URL as permsync reaches it (http://keycloak:8080 inside
+    # compose). Unset means the origin of OIDC_ISSUER; the realm always comes
+    # from OIDC_ISSUER.
+    permsync_keycloak_url: str | None = None
+    # Time from the start of one cycle to the start of the next. This bounds the
+    # revocation window (ADR 0002).
+    permsync_interval_seconds: int = Field(default=60, gt=0)
 
     @field_validator("database_url", "ingest_database_url")
     @classmethod
@@ -65,11 +78,16 @@ class Settings(BaseSettings):
     @field_validator("oidc_issuer")
     @classmethod
     def _issuer_is_http_url(cls, value: str) -> str:
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError("must be an http(s) URL")
+        _require_http_url(value)
         if value.endswith("/"):
             raise ValueError("must not end with '/': it is compared verbatim with `iss`")
+        return value
+
+    @field_validator("permsync_keycloak_url")
+    @classmethod
+    def _keycloak_url_is_http_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            _require_http_url(value)
         return value
 
     @field_validator("oidc_algorithms", mode="before")
