@@ -1,7 +1,8 @@
 name: E2E
 
-# Manual only: starting Keycloak takes a minute or two, so the end-to-end check
-# stays out of the default CI run (ci.yml). Run it from the Actions tab.
+# Manual only: starting Keycloak and Ollama takes a few minutes, so the
+# end-to-end check stays out of the default CI run (ci.yml). Run it from the
+# Actions tab.
 on:
   workflow_dispatch:
 
@@ -10,9 +11,9 @@ permissions:
 
 jobs:
   e2e:
-    name: End to end (Keycloak + PostgreSQL + API)
+    name: End to end (Keycloak + PostgreSQL + Ollama + API)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,8 +30,37 @@ jobs:
           cp .env.example .env
           grep -Ev '^\s*(#|$)' .env.example >> "$GITHUB_ENV"
 
-      # Starts postgres and keycloak, migrates, starts the API, runs pytest -m e2e.
+      # Ollama keeps its data in a host directory instead of the named volume
+      # (compose.yaml reads OLLAMA_DATA_DIR), so the embedding model can be cached
+      # between runs. The key names the model from .env.example and changes with
+      # compose.yaml, which pins the Ollama image.
+      - name: Ollama data directory
+        run: echo "OLLAMA_DATA_DIR=$RUNNER_TEMP/ollama" >> "$GITHUB_ENV"
+      - name: Restore the embedding model
+        id: model-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ollama/models
+          key: ollama-nomic-embed-text-${{ hashFiles('compose.yaml') }}
+
+      # Starts postgres, keycloak and ollama, pulls the embedding model (a no-op
+      # download when the cache hit), migrates, starts the API, runs pytest -m e2e.
       - run: make e2e
+
+      # The container writes as root; the cache action runs as the runner user.
+      - name: Save the embedding model
+        id: model-owner
+        if: always() && steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ -d "$OLLAMA_DATA_DIR/models" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$OLLAMA_DATA_DIR/models"
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: always() && steps.model-owner.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ollama/models
+          key: ${{ steps.model-cache.outputs.cache-primary-key }}
 
       - name: Container logs on failure
         if: failure()

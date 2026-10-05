@@ -9,6 +9,7 @@ Tenant B reuses the same user subs and group names as tenant A on purpose: a
 leak through "same group name, other tenant" must show up here.
 """
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
@@ -40,6 +41,11 @@ MEMBERSHIPS = [("a", "alice", "hr"), ("b", "alice", "hr")]
 class World:
     tenants: dict[str, UUID]
     documents: dict[str, UUID] = field(default_factory=dict)
+
+
+def source_hash(document: str) -> str:
+    """A valid documents.source_hash (SHA-256 hex), unique per document name."""
+    return hashlib.sha256(document.encode()).hexdigest()
 
 
 def canary(document: str) -> str:
@@ -97,9 +103,11 @@ async def world() -> World:
                 if t != key:
                     continue
                 doc: UUID = await conn.fetchval(
-                    "INSERT INTO documents (tenant_id, title) VALUES ($1, $2) RETURNING id",
+                    "INSERT INTO documents (tenant_id, title, source_hash)"
+                    " VALUES ($1, $2, $3) RETURNING id",
                     tenant,
                     name,
+                    source_hash(name),
                 )
                 w.documents[name] = doc
                 await conn.executemany(

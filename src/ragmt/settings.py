@@ -9,7 +9,7 @@ or tracebacks. Call `.get_secret_value()` only where the value is used.
 """
 
 from functools import lru_cache
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -23,6 +23,8 @@ SAFE_ALGORITHMS = frozenset(
 )
 
 _ASYNC_DRIVER = "postgresql+asyncpg"
+
+MIB = 1024 * 1024
 
 
 def _require_http_url(value: str) -> None:
@@ -42,7 +44,7 @@ class Settings(BaseSettings):
     # app_ingest: ingest, ACL changes and permsync. Sees the whole tenant, so it
     # must never serve a user's query.
     ingest_database_url: SecretStr
-    # Pool of the API's app_rw engine (the only engine the API creates).
+    # Pool of each of the API's engines: app_rw, and app_ingest for the write routes.
     database_pool_size: int = Field(default=5, gt=0)
     database_max_overflow: int = Field(default=5, ge=0)
     # Must match the vector(n) column in the migrations.
@@ -67,6 +69,28 @@ class Settings(BaseSettings):
     # revocation window (ADR 0002).
     permsync_interval_seconds: int = Field(default=60, gt=0)
 
+    # --- Ingestion (ADR 0008) --------------------------------------------------
+    # Largest upload accepted, in bytes, checked before conversion.
+    ingest_max_bytes: int = Field(default=10 * MIB, gt=0)
+    # Chunk size in characters, and how many characters consecutive chunks of
+    # one section share. The overlap must be smaller than the chunk.
+    chunk_max_chars: int = Field(default=2000, gt=0)
+    chunk_overlap_chars: int = Field(default=200, ge=0)
+    # Texts per embedding request.
+    embed_batch_size: int = Field(default=32, gt=0)
+
+    # --- LLM providers ----------------------------------------------------------
+    # "fake": hash-derived embeddings for CI and tests, meaningless for ranking.
+    llm_provider: Literal["ollama", "openai_compat", "fake"] = "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embed_model: str = Field(default="nomic-embed-text", min_length=1)
+    ollama_chat_model: str = Field(default="llama3.1:8b", min_length=1)
+    # Only read when LLM_PROVIDER=openai_compat. Empty values in .env mean unset.
+    openai_compat_base_url: str | None = None
+    openai_compat_api_key: SecretStr | None = None
+    openai_compat_embed_model: str | None = None
+    openai_compat_chat_model: str | None = None
+
     @field_validator("database_url", "ingest_database_url")
     @classmethod
     def _async_postgres(cls, value: SecretStr) -> SecretStr:
@@ -86,6 +110,31 @@ class Settings(BaseSettings):
     @field_validator("permsync_keycloak_url")
     @classmethod
     def _keycloak_url_is_http_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            _require_http_url(value)
+        return value
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _ollama_url_is_http_url(cls, value: str) -> str:
+        _require_http_url(value)
+        return value
+
+    @field_validator(
+        "openai_compat_base_url",
+        "openai_compat_api_key",
+        "openai_compat_embed_model",
+        "openai_compat_chat_model",
+        mode="before",
+    )
+    @classmethod
+    def _empty_means_unset(cls, value: object) -> object:
+        # .env.example lists these as `OPENAI_COMPAT_BASE_URL=` (empty).
+        return None if value == "" else value
+
+    @field_validator("openai_compat_base_url")
+    @classmethod
+    def _openai_compat_url_is_http_url(cls, value: str | None) -> str | None:
         if value is not None:
             _require_http_url(value)
         return value
@@ -122,6 +171,30 @@ class Settings(BaseSettings):
         writer = make_url(self.ingest_database_url.get_secret_value()).username
         if reader == writer:
             raise ValueError("DATABASE_URL and INGEST_DATABASE_URL must use different roles")
+        return self
+
+    @model_validator(mode="after")
+    def _overlap_below_chunk_size(self) -> Self:
+        # With overlap >= size, a chunker that steps by (size - overlap) never advances.
+        if self.chunk_overlap_chars >= self.chunk_max_chars:
+            raise ValueError("CHUNK_OVERLAP_CHARS must be smaller than CHUNK_MAX_CHARS")
+        return self
+
+    @model_validator(mode="after")
+    def _openai_compat_is_complete(self) -> Self:
+        # The API key stays optional: local OpenAI-compatible servers often need none.
+        if self.llm_provider == "openai_compat":
+            missing = [
+                name.upper()
+                for name in (
+                    "openai_compat_base_url",
+                    "openai_compat_embed_model",
+                    "openai_compat_chat_model",
+                )
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(f"LLM_PROVIDER=openai_compat needs {', '.join(missing)}")
         return self
 
 

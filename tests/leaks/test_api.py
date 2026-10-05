@@ -47,10 +47,12 @@ def principal_override(world: World) -> Callable[[str], Principal]:
 
 @asynccontextmanager
 async def api(world: World, pool_size: int = 2) -> AsyncIterator[httpx.AsyncClient]:
-    """The real app (lifespan included) on a small app_rw pool."""
+    """The real app (lifespan included) on a small app_rw pool, with fake embeddings."""
     if not os.environ.get("DATABASE_URL"):
         pytest.skip("DATABASE_URL is not set")
-    app = create_app(Settings(database_pool_size=pool_size, database_max_overflow=0))
+    app = create_app(
+        Settings(database_pool_size=pool_size, database_max_overflow=0, llm_provider="fake")
+    )
     app.dependency_overrides[get_principal] = principal_override(world)
     transport = httpx.ASGITransport(app=app)
     async with (

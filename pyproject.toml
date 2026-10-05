@@ -21,8 +21,12 @@ dependencies = [
     "pgvector>=0.3",
     "pyjwt[crypto]>=2.9",
     "httpx>=0.27",
-    # The ingestion `engine/` package (file-to-Markdown converter) is added
-    # once its distribution source is decided.
+    # Ingestion (ADR 0008): .docx -> HTML and HTML -> Markdown, and multipart
+    # form parsing for uploads. Licenses are checked in the ADR.
+    # mammoth 1.11 turned off external file access (images linked from a .docx).
+    "mammoth>=1.11",
+    "markdownify>=1.1",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +74,11 @@ python_version = "3.12"
 files = ["src", "seed"]
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# mammoth ships no type information (no py.typed, no stubs).
+module = ["mammoth", "mammoth.*"]
+ignore_missing_imports = true
 
 # --- pytest --------------------------------------------------
 [tool.pytest.ini_options]

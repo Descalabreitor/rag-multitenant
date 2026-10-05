@@ -3,3 +3,6 @@
 *.sh text eol=lf
 # make requires tabs and LF.
 Makefile text eol=lf
+# Seed documents are uploaded byte for byte and deduplicated by hash: keep them
+# identical on every checkout.
+seed/files/** text eol=lf

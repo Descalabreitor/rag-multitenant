@@ -150,3 +150,14 @@ def test_group_memberships_match_the_seed() -> None:
     }
     seed = {(str(t.id), sub, group) for t in TENANTS for sub, group in t.memberships}
     assert realm == seed
+
+
+def test_each_organization_has_admins_who_are_not_in_finance() -> None:
+    """/<alias>/admins marks tenant admins (ADR 0008). Each tenant has one, and
+    none is in finance, so tests can tell "may write" from "may read"."""
+    for alias in ORGS:
+        (top,) = [g for g in REALM["groups"] if g["name"] == alias]
+        assert "admins" in {g["name"] for g in top["subGroups"]}
+        admins = [u for u in PEOPLE if f"/{alias}/admins" in u["groups"]]
+        assert len(admins) == 1, alias
+        assert f"/{alias}/finance" not in admins[0]["groups"]

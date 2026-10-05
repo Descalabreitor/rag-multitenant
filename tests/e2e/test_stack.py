@@ -10,12 +10,13 @@ import json
 import os
 import time
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
 
 from ragmt.auth.tokens import LEEWAY_SECONDS
-from seed.corpus import ALICE, TENANTS, UMBRA
+from seed.corpus import ALICE, UMBRA
 from tests.e2e.conftest import Keycloak, RealmAdmin, sync_permissions
 
 pytestmark = [pytest.mark.e2e, pytest.mark.db]
@@ -27,7 +28,6 @@ VISIBLE = {
     "carol": {"Lab safety policy", "Compound UB-7 trial results"},
     "dave": {"Lab safety policy", "Annual budget"},
 }
-DOCUMENT_IDS = {doc.title: doc.id for tenant in TENANTS for doc in tenant.documents}
 
 
 def bearer(token: str) -> dict[str, str]:
@@ -63,10 +63,12 @@ def test_each_user_sees_only_their_permitted_documents(
     assert titles(api, keycloak.user_token(username)) == VISIBLE[username]
 
 
-def test_another_tenants_document_is_not_found(api: httpx.Client, keycloak: Keycloak) -> None:
+def test_another_tenants_document_is_not_found(
+    api: httpx.Client, keycloak: Keycloak, seeded: dict[str, UUID]
+) -> None:
     dave = keycloak.user_token("dave")
     for title in VISIBLE["alice"]:
-        response = api.get(f"/documents/{DOCUMENT_IDS[title]}", headers=bearer(dave))
+        response = api.get(f"/documents/{seeded[title]}", headers=bearer(dave))
         assert response.status_code == httpx.codes.NOT_FOUND, title
 
 
@@ -171,11 +173,11 @@ def _audience_mapper(audience: str) -> dict[str, Any]:
 
 
 def test_leaving_a_group_in_keycloak_revokes_access_after_one_sync(
-    api: httpx.Client, keycloak: Keycloak, admin: RealmAdmin
+    api: httpx.Client, keycloak: Keycloak, admin: RealmAdmin, seeded: dict[str, UUID]
 ) -> None:
     """The same token, issued before the change, loses the group's documents (ADR 0002)."""
     token = keycloak.user_token("alice")
-    budget = f"/documents/{DOCUMENT_IDS['Q3 budget']}"
+    budget = f"/documents/{seeded['Q3 budget']}"
     assert "Q3 budget" in titles(api, token)
     assert api.get(budget, headers=bearer(token)).status_code == httpx.codes.OK
 

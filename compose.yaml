@@ -92,12 +92,15 @@ services:
       keycloak:
         condition: service_healthy
 
+  # Pinned: adapters/llm/ollama.py is checked against this version's /api/embed.
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.35.1
     ports:
       - "127.0.0.1:11434:11434"
     volumes:
-      - ollama:/root/.ollama
+      # The named volume by default. OLLAMA_DATA_DIR, if set to an absolute path,
+      # bind-mounts it instead (the e2e workflow does, to cache the model).
+      - ${OLLAMA_DATA_DIR:-ollama}:/root/.ollama
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -115,7 +118,8 @@ services:
 
   # One-shot: pulls the configured models, then exits. Re-runs are cheap (cached).
   ollama-pull:
-    image: ollama/ollama:latest
+    # Same version as the server.
+    image: ollama/ollama:0.35.1
     environment:
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}

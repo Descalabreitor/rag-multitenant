@@ -4,7 +4,7 @@ A retrieval-augmented generation service for multiple organizations, where **no 
 
 The goal is to show, with numbers, what it takes to make permission-aware RAG trustworthy: a leak-test suite (cross-tenant queries, JWT tampering, connection-pool reuse, revocation, prompt injection, property-based tests), recall under restrictive filters, and the latency cost of doing it right.
 
-> This is a work in progress, built in the open. The database with its RLS policies, identity (Keycloak realm, JWT validation, permission sync) and a minimal documents API are in place, checked end to end against a real Keycloak. Ingestion and retrieval are next. Measured results will land in [`docs/results/`](docs/results/).
+> This is a work in progress, built in the open. The database with its RLS policies, identity (Keycloak realm, JWT validation, permission sync), ingestion (upload `.md`, `.html` or `.docx`, chunked and embedded with Ollama) and the documents API are in place, checked end to end against a real Keycloak and Ollama. Retrieval and answer generation are next. Measured results will land in [`docs/results/`](docs/results/).
 
 ## Design decisions
 
@@ -17,6 +17,7 @@ Decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - [0005. Keycloak realm layout: organizations, groups and clients](docs/adr/0005-keycloak-realm-layout.md)
 - [0006. Token validation, the tenant claim and the 401/403 split](docs/adr/0006-token-validation-and-tenant-claim.md)
 - [0007. Permission sync: what it reads, and when it may revoke](docs/adr/0007-permission-sync.md)
+- [0008. The write path: uploads, ACL changes and soft delete](docs/adr/0008-write-path.md)
 
 ## How access control works
 
@@ -25,6 +26,20 @@ Decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
 - The JWT proves who you are, but what you can read is resolved from memberships synced from Keycloak, so revoking access doesn't wait for tokens to expire.
 - The LLM only sees chunks you could already read. It has no tools and no database access, and retrieved text is treated as untrusted data.
 - Every retrieval is written to an insert-only audit log.
+
+## API
+
+Every route but `/healthz` needs a bearer token from Keycloak. The tenant comes from the token only; a `tenant_id` anywhere in the request is ignored.
+
+| Route | Who | What |
+|---|---|---|
+| `GET /documents` | any user | The documents the caller's ACLs allow: `[{id, title}]` |
+| `GET /documents/{id}` | any user | One of them; 404 for anything else, including other tenants' ids |
+| `POST /documents` | tenant admins | Multipart upload: `file` (`.md`, `.html` or `.docx`, up to `INGEST_MAX_BYTES`) and an optional `acl`, a JSON list such as `["group:hr"]`. Without one, only the uploader can read it. Returns 201 `{id, title, chunks, unchanged}`; uploading the same bytes again returns the stored document with `unchanged: true` |
+| `PUT /documents/{id}/acl` | tenant admins | Replaces the ACL with `{"principals": [...]}`; the chunks follow in the same transaction |
+| `DELETE /documents/{id}` | tenant admins | Soft delete: the document disappears for every reader. `?purge=true` removes it and its chunks |
+
+Admins are the members of `/<organization>/admins` in Keycloak. Being an admin grants no read access: an admin reads only what the ACLs allow, like anyone else. A non-admin gets 403 on an upload, and the same 404 as a missing document on the routes with an id, so nobody learns that an id exists. Embeddings are never returned. Swagger is at `/docs`. See [ADR 0008](docs/adr/0008-write-path.md).
 
 ## What will be measured
 
@@ -56,7 +71,7 @@ pytest
 
 All ports are bound to `127.0.0.1`. On first start, PostgreSQL creates three separate roles: `migrator`, which owns the schema and is used only by Alembic, `app_rw`, which serves user requests, and `app_ingest`, which handles ingest and permission sync. Neither runtime role owns tables or can bypass RLS. Keycloak gets its own database with no access to the application's.
 
-Tests marked `db` need PostgreSQL running. Tests marked `e2e` need Keycloak too, and are skipped when it isn't reachable. `make e2e` starts what they need, migrates, starts the API and runs them. The connection URLs are read from `.env` (variables already set in the environment take precedence); if the URLs are missing, those tests are skipped, and if the database is down, they fail.
+Tests marked `db` need PostgreSQL running. Tests marked `e2e` need Keycloak too, and are skipped when it isn't reachable; they also need Ollama with the embedding model, because the API they call embeds uploads for real. `make e2e` starts what they need, pulls the embedding model, migrates, starts the API and runs them. The connection URLs are read from `.env` (variables already set in the environment take precedence); if the URLs are missing, those tests are skipped, and if the database is down, they fail.
 
 ## Try it
 
@@ -91,6 +106,33 @@ curl -s http://127.0.0.1:8000/documents/0e982739-b267-40bd-b180-2c57485c2521   -
 
 Both are in a group called `finance`, but each sees only their own organization's budget. Remove alice from `/acme/finance` in the Keycloak admin console (http://localhost:8080, the `ragmt` realm), run `python -m ragmt.permsync --once`, and the same token no longer lists the Q3 budget.
 
+Now add a document. Bob is Acme's admin, so he can upload, here for Acme's finance group only:
+
+```bash
+BOB=$(token bob)       # Acme Logistics, groups engineering and admins
+ERIN=$(token erin)     # Acme Logistics, no groups
+
+printf '# Depot night shift
+
+The north depot moves its night shift in November.
+' > depot.md
+curl -s http://127.0.0.1:8000/documents -H "Authorization: Bearer $BOB"   -F file=@depot.md -F 'acl=["group:finance"]'
+# {"id":"5b0e…","title":"Depot night shift","chunks":1,"unchanged":false}
+
+# Who gets it? Alice (Acme finance) does. Bob, erin and dave don't: bob is an admin
+# but not in finance, and dave's finance group belongs to the other organization.
+for t in "$ALICE" "$BOB" "$ERIN" "$DAVE"; do
+  curl -s http://127.0.0.1:8000/documents -H "Authorization: Bearer $t" | grep -c 'Depot night shift'
+done
+# 1, 0, 0, 0
+
+# Alice isn't an admin: her upload is refused.
+curl -s http://127.0.0.1:8000/documents -H "Authorization: Bearer $ALICE" -F file=@depot.md
+# {"detail":"Forbidden"}
+```
+
+`PUT /documents/{id}/acl` moves access for tokens already issued, and `DELETE /documents/{id}` hides the document from everyone (`?purge=true` removes it). The API embeds with `LLM_PROVIDER` from `.env`: `fake` in `.env.example`, so this works without Ollama; set it to `ollama` for real embeddings. `python -m seed` resets the seed tenants, uploads included.
+
 ## Roadmap
 
 - [x] Scaffold: package layout, tooling, environment
@@ -98,7 +140,7 @@ Both are in a group called `finance`, but each sees only their own organization'
 - [x] Database roles: schema owner separate from a runtime role that cannot bypass RLS
 - [x] Database schema and RLS policies, with SQL-level isolation tests
 - [x] Keycloak realm, JWT validation, per-request tenant context, permission sync
-- [ ] Ingestion: documents → Markdown → chunks → embeddings, with ACLs
+- [x] Ingestion: documents → Markdown → chunks → embeddings, with ACLs, through admin-only write routes
 - [ ] Retrieval and answer generation with citations, plus audit log
 - [ ] Revocation and deletion (GDPR erasure) with measured propagation time
 - [ ] Leak-test suite and benchmarks, published in `docs/results/`

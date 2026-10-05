@@ -199,8 +199,8 @@ async def test_every_chunk_matches_its_document_acl(world: World) -> None:
         "INSERT INTO tenants (id, name) VALUES (gen_random_uuid(), 'x')",
         "INSERT INTO memberships (tenant_id, user_sub, group_name)"
         " VALUES (current_setting('app.tenant_id')::uuid, 'alice', 'admins')",
-        "INSERT INTO documents (tenant_id, title)"
-        " VALUES (current_setting('app.tenant_id')::uuid, 'x')",
+        "INSERT INTO documents (tenant_id, title, source_hash)"
+        " VALUES (current_setting('app.tenant_id')::uuid, 'x', repeat('0', 64))",
         "UPDATE chunks SET content = 'x'",
         "DELETE FROM chunks",
         "DELETE FROM document_acl",
@@ -220,7 +220,11 @@ async def test_writer_cannot_reach_other_tenant(world: World) -> None:
 
     with pytest.raises(asyncpg.InsufficientPrivilegeError, match="row-level security"):
         async with session(INGEST, a) as conn:
-            await conn.execute("INSERT INTO documents (tenant_id, title) VALUES ($1, 'x')", b)
+            await conn.execute(
+                "INSERT INTO documents (tenant_id, title, source_hash)"
+                " VALUES ($1, 'x', repeat('0', 64))",
+                b,
+            )
 
     with pytest.raises(asyncpg.InsufficientPrivilegeError, match="row-level security"):
         async with session(INGEST, a) as conn:

@@ -7,9 +7,13 @@ Every test here is skipped unless Keycloak answers at OIDC_ISSUER. Then:
 - The realm is changed through the admin API as the bootstrap admin
   (KC_BOOTSTRAP_ADMIN_*), never through the database.
 - The API is the one at E2E_API_URL (`make e2e` starts it), or, when that is
-  unset, a uvicorn process started here on a free port.
+  unset, a uvicorn process started here on a free port. Both run with
+  LLM_PROVIDER=ollama, so uploads are embedded by the real model: Ollama must
+  be up at OLLAMA_BASE_URL with OLLAMA_EMBED_MODEL pulled, or the tests fail
+  saying what to run.
 - Before the tests, the seed corpus is loaded as app_ingest (`make seed`) and
-  permsync runs once, so the database agrees with the realm.
+  permsync runs once, so the database agrees with the realm. The seed itself
+  uses fake embeddings: these tests check access, not ranking.
 
 The fixtures are synchronous: the tests talk to separate processes over HTTP,
 and the few async steps (seed, permsync) run with asyncio.run.
@@ -26,11 +30,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ragmt.adapters.llm import FakeEmbeddings
 from ragmt.permsync.__main__ import run as run_permsync
 from ragmt.settings import Settings
 from seed.load import load as load_seed
@@ -177,18 +183,25 @@ def admin(keycloak: Keycloak) -> Iterator[RealmAdmin]:
 
 
 @pytest.fixture(scope="session")
-def seeded(keycloak: Keycloak) -> None:
-    """The seed corpus, written as app_ingest, then memberships from the realm."""
+def seeded(keycloak: Keycloak) -> dict[str, UUID]:
+    """The seed corpus, ingested as app_ingest with fake embeddings (these tests
+    check access, not ranking), then memberships from the realm.
 
-    async def seed() -> None:
+    Returns each seed document's id by title: the ingestion pipeline assigns them.
+    """
+
+    async def seed() -> dict[str, UUID]:
+        settings = Settings()
         engine = create_async_engine(_env("INGEST_DATABASE_URL"))
         try:
-            await load_seed(engine, int(os.environ.get("EMBEDDING_DIM", "768")))
+            loaded = await load_seed(engine, FakeEmbeddings(settings.embedding_dim), settings)
         finally:
             await engine.dispose()
+        return {title: id_ for tenant in loaded for title, id_ in tenant.documents.items()}
 
-    asyncio.run(seed())
+    document_ids = asyncio.run(seed())
     sync_permissions()
+    return document_ids
 
 
 def _free_port() -> int:
@@ -198,38 +211,66 @@ def _free_port() -> int:
         return port
 
 
-def _wait_until_healthy(url: str, process: subprocess.Popen[bytes] | None) -> None:
-    deadline = time.monotonic() + 30
+@pytest.fixture(scope="session")
+def ollama(keycloak: Keycloak) -> None:
+    """Fails, saying what to run, unless Ollama serves the embedding model."""
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+    model = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    hint = f"run `docker compose up -d --wait ollama` and pull {model} (`make e2e` does both)"
+    try:
+        response = httpx.get(f"{base_url}/api/tags", timeout=3)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        pytest.fail(f"Ollama is not reachable at {base_url}: {hint}")
+    pulled = {entry["name"] for entry in response.json().get("models", [])}
+    if model not in pulled and f"{model}:latest" not in pulled:
+        pytest.fail(f"{model} is not pulled in Ollama: {hint}")
+
+
+# The API embeds a probe text at startup (the provider's check), which loads the
+# model into Ollama first: on a CPU that can take a while.
+_STARTUP_SECONDS = 120
+
+
+def _wait_until_healthy(
+    url: str, process: subprocess.Popen[bytes] | None, log: Path | None
+) -> None:
+    deadline = time.monotonic() + _STARTUP_SECONDS
     while time.monotonic() < deadline:
         if process is not None and process.poll() is not None:
-            pytest.fail(f"the API exited with status {process.returncode}")
+            tail = log.read_text(errors="replace")[-2000:] if log else ""
+            pytest.fail(f"the API exited with status {process.returncode}:\n{tail}")
         try:
             if httpx.get(f"{url}/healthz", timeout=1).status_code == httpx.codes.OK:
                 return
         except httpx.HTTPError:
             pass
         time.sleep(0.2)
-    pytest.fail(f"the API at {url} did not become healthy within 30 s")
+    pytest.fail(f"the API at {url} did not become healthy within {_STARTUP_SECONDS} s")
 
 
 @pytest.fixture(scope="session")
-def api(seeded: None, tmp_path_factory: pytest.TempPathFactory) -> Iterator[httpx.Client]:
+def api(
+    seeded: dict[str, UUID], ollama: None, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[httpx.Client]:
     """An HTTP client for the running API."""
     url = os.environ.get("E2E_API_URL")
     process = None
+    log = None
     if not url:
         port = _free_port()
         url = f"http://127.0.0.1:{port}"
-        log: Path = tmp_path_factory.mktemp("api") / "uvicorn.log"
+        log = tmp_path_factory.mktemp("api") / "uvicorn.log"
         command = [sys.executable, "-m", "uvicorn", "--factory", "ragmt.api.app:create_app"]
         with log.open("wb") as out:
             process = subprocess.Popen(  # noqa: S603 -- fixed command, this interpreter
                 [*command, "--host", "127.0.0.1", "--port", str(port)],
                 stdout=out,
                 stderr=subprocess.STDOUT,
+                env={**os.environ, "LLM_PROVIDER": "ollama"},
             )
     try:
-        _wait_until_healthy(url, process)
+        _wait_until_healthy(url, process, log)
         with httpx.Client(base_url=url, timeout=_TIMEOUT) as client:
             yield client
     finally:

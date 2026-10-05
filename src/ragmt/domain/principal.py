@@ -14,3 +14,9 @@ class Principal:
 
     sub: str
     tenant_id: UUID
+
+
+# Members of the Keycloak group /<org alias>/admins, which permsync stores as this
+# group name, are the tenant's admins: only they upload, change ACLs and delete
+# (ADR 0008). Like every group, it is read from `memberships`, not from the token.
+TENANT_ADMIN_GROUP = "admins"

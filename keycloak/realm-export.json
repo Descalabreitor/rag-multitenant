@@ -157,6 +157,9 @@
       },
       "subGroups": [
         {
+          "name": "admins"
+        },
+        {
           "name": "engineering"
         },
         {
@@ -172,6 +175,9 @@
         ]
       },
       "subGroups": [
+        {
+          "name": "admins"
+        },
         {
           "name": "finance"
         },
@@ -217,6 +223,7 @@
         }
       ],
       "groups": [
+        "/acme/admins",
         "/acme/engineering"
       ]
     },
@@ -253,6 +260,7 @@
         }
       ],
       "groups": [
+        "/umbra/admins",
         "/umbra/research"
       ]
     },

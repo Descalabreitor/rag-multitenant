@@ -1,18 +1,31 @@
 """The fictional world `make seed` loads: two tenants, five users, seven documents.
 
-Everything here is invented. Ids are fixed so the seed is repeatable, and
+Everything here is invented. Tenant ids and user subs are fixed, and
 keycloak/realm-export.json uses the same ones: tenant ids are Organization ids,
 user subs are Keycloak user ids, and memberships mirror the realm's groups
-(tests/unit/test_realm_export.py checks that they agree).
+(tests/unit/test_realm_export.py checks that they agree). Document ids are not
+fixed: the ingestion pipeline assigns them, and they stay the same for as long as
+a file's bytes do (seed/load.py).
 
-Every chunk ends with its document's canary, a string that appears nowhere else.
-If a canary shows up in a response for someone outside the document's ACL, that
-is a leak. Each user belongs to one tenant only, and group names repeat across
-tenants on purpose (both have `finance`).
+The documents are files in seed/files/, a mix of Markdown, HTML and .docx. A
+.docx is built at load time from `<name>.docx.md` next to where it would be
+(seed/docx.py), so the repo holds no binaries.
+
+Every document carries its canary, a string that appears nowhere else, in each
+of its sections. If a canary shows up in a response for someone outside the
+document's ACL, that is a leak. Each user belongs to one tenant only, and group
+names repeat across tenants on purpose (both have `finance`).
+
+Each tenant has one admin (the `admins` group, ADR 0008): bob in Acme, carol in
+Umbra. Neither is in finance, so being an admin visibly grants no read access:
+admins upload, change ACLs and delete, but read only what the ACLs allow. The
+seed uploads each tenant's documents as its admin.
 """
 
 from dataclasses import dataclass
 from uuid import UUID
+
+from ragmt.domain import TENANT_ADMIN_GROUP
 
 ACME = UUID("7f66d4f3-54bf-47da-9604-0551ebdb756b")
 UMBRA = UUID("17033638-c3cc-4d1e-b1fb-539941854a6e")
@@ -26,12 +39,12 @@ ERIN = "ee6caa5b-fb1c-4234-b847-f5ada9b20d49"
 
 @dataclass(frozen=True)
 class Document:
-    id: UUID
+    # Under seed/files/, POSIX-style. Its name is the filename the upload carries.
+    path: str
+    # The title the converter must find (the first H1); tests and e2e rely on it.
     title: str
     canary: str
     acl: tuple[str, ...]
-    # (heading, body) pairs; each becomes one chunk.
-    sections: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -43,125 +56,66 @@ class Tenant:
     memberships: tuple[tuple[str, str], ...]
     documents: tuple[Document, ...]
 
+    @property
+    def uploader(self) -> str:
+        """The tenant admin the seed uploads as (only admins upload, ADR 0008)."""
+        return next(sub for sub, group in self.memberships if group == TENANT_ADMIN_GROUP)
+
 
 TENANTS = (
     Tenant(
         id=ACME,
         name="Acme Logistics",
-        memberships=((ALICE, "finance"), (BOB, "engineering")),
+        memberships=((ALICE, "finance"), (BOB, "engineering"), (BOB, "admins")),
         documents=(
             Document(
-                id=UUID("e72cb086-b518-4880-9779-0ab1c8814abb"),
+                path="acme/employee-handbook.md",
                 title="Employee handbook",
                 canary="CANARY-ACME-HANDBOOK",
                 acl=("tenant:*",),
-                sections=(
-                    (
-                        "Working hours",
-                        "Core hours are 10:00 to 15:00. Outside them, people organise their "
-                        "own time and record it in the timesheet by Friday.",
-                    ),
-                    (
-                        "Expenses",
-                        "Travel is booked through the internal portal. Receipts above 40 "
-                        "credits must be attached within two weeks of the trip.",
-                    ),
-                ),
             ),
             Document(
-                id=UUID("0e982739-b267-40bd-b180-2c57485c2521"),
+                path="acme/q3-budget.html",
                 title="Q3 budget",
                 canary="CANARY-ACME-BUDGET",
                 acl=("group:finance",),
-                sections=(
-                    (
-                        "Fleet",
-                        "The fleet budget for Q3 is 1.2 million credits, of which 300,000 "
-                        "go to replacing the oldest delivery drones.",
-                    ),
-                    (
-                        "Hiring",
-                        "Two planner roles are approved for Q3. A third depends on the "
-                        "northern depot opening on schedule.",
-                    ),
-                ),
             ),
             Document(
-                id=UUID("1065e2b9-7acc-4b4f-8461-08b49b2015b6"),
+                path="acme/routing-runbook.md",
                 title="Routing service runbook",
                 canary="CANARY-ACME-RUNBOOK",
                 acl=("group:engineering",),
-                sections=(
-                    (
-                        "Restarting the router",
-                        "Drain the queue first, then restart one replica at a time. The "
-                        "health check needs about 90 seconds to turn green.",
-                    ),
-                ),
             ),
             Document(
-                id=UUID("13f86cc8-c073-4529-85ce-bb9f580c6bdc"),
+                path="acme/alice-review.docx",
                 title="Performance review: Alice",
                 canary="CANARY-ACME-ALICE-REVIEW",
                 acl=(f"user:{ALICE}",),
-                sections=(
-                    (
-                        "Summary",
-                        "Alice led the quarterly close two days ahead of plan and mentored "
-                        "a new analyst. Next goal: own the depot cost model.",
-                    ),
-                ),
             ),
         ),
     ),
     Tenant(
         id=UMBRA,
         name="Umbra Biotech",
-        memberships=((CAROL, "research"), (DAVE, "finance")),
+        memberships=((CAROL, "research"), (CAROL, "admins"), (DAVE, "finance")),
         documents=(
             Document(
-                id=UUID("34ba74ce-c217-4ef4-95b1-9583a7056270"),
+                path="umbra/lab-safety.html",
                 title="Lab safety policy",
                 canary="CANARY-UMBRA-SAFETY",
                 acl=("tenant:*",),
-                sections=(
-                    (
-                        "Protective equipment",
-                        "Goggles and gloves are required past the yellow line. Lab coats "
-                        "stay inside the lab and are collected on Thursdays.",
-                    ),
-                ),
             ),
             Document(
-                id=UUID("bb77923c-8d24-4868-be8c-0b8ff47116ef"),
+                path="umbra/trial-results.docx",
                 title="Compound UB-7 trial results",
                 canary="CANARY-UMBRA-TRIAL",
                 acl=("group:research",),
-                sections=(
-                    (
-                        "Results",
-                        "Compound UB-7 cut growth in the culture by 34% at the middle dose. "
-                        "The high dose showed no further benefit.",
-                    ),
-                    (
-                        "Next steps",
-                        "Repeat the middle dose with a larger sample before any external "
-                        "presentation.",
-                    ),
-                ),
             ),
             Document(
-                id=UUID("193fedfc-f1be-42ea-90b3-d2553593f377"),
+                path="umbra/annual-budget.md",
                 title="Annual budget",
                 canary="CANARY-UMBRA-BUDGET",
                 acl=("group:finance",),
-                sections=(
-                    (
-                        "Research spend",
-                        "Research receives 60% of the annual budget. Equipment purchases "
-                        "above 50,000 credits need board approval.",
-                    ),
-                ),
             ),
         ),
     ),

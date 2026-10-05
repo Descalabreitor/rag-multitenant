@@ -15,18 +15,21 @@ help: ## List the targets
 migrate: ## Apply migrations as the migrator role (MIGRATOR_DATABASE_URL)
 	alembic upgrade head
 
-seed: ## Reset the fictional seed tenants and corpus, as app_ingest (INGEST_DATABASE_URL)
+# Ingests seed/files/ through the real pipeline with the LLM_PROVIDER embedder
+# (from the environment or .env; `make seed LLM_PROVIDER=ollama` overrides it).
+seed: ## Reset the seed tenants and ingest seed/files/, as app_ingest (INGEST_DATABASE_URL)
 	$(PYTHON) -m seed
 
 permsync: ## Sync Keycloak groups into memberships, as app_ingest (ARGS=--once for one cycle)
 	$(PYTHON) -m ragmt.permsync $(ARGS)
 
-# Starts the API in the background, runs the tests against it over HTTP, and
-# stops it when they finish, pass or fail. The tests seed the corpus and run
-# permsync once themselves.
-e2e: ## End-to-end check against the real stack: Keycloak + PostgreSQL + the API
-	docker compose up -d --wait --wait-timeout 300 postgres keycloak
+# Starts the stack and Ollama, pulls only the embedding model (not the chat
+# model, which the tests don't use), starts the API in the background, runs the
+# tests against it over HTTP, and stops it when they finish, pass or fail. The
+# tests seed the corpus and run permsync once themselves. The API embeds uploads
+# with Ollama; the pull reads OLLAMA_EMBED_MODEL from .env, as the API does.
+e2e: ## End-to-end check against the real stack: Keycloak + PostgreSQL + Ollama + the API
+	docker compose up -d --wait --wait-timeout 300 postgres keycloak ollama
+	docker compose run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL"'
 	alembic upgrade head
-	$(PYTHON) -m uvicorn --factory ragmt.api.app:create_app --host 127.0.0.1 --port $(E2E_PORT) & \
-	api=$$!; trap 'kill $$api' EXIT; \
-	E2E_API_URL=http://127.0.0.1:$(E2E_PORT) $(PYTHON) -m pytest -m e2e
+	LLM_PROVIDER=ollama $(PYTHON) -m uvicorn --factory ragmt.api.app:create_app --host 127.0.0.1 --port $(E2E_PORT) & 	api=$$!; trap 'kill $$api' EXIT; 	E2E_API_URL=http://127.0.0.1:$(E2E_PORT) $(PYTHON) -m pytest -m e2e

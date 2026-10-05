@@ -84,7 +84,10 @@ async def tenants(writer: AsyncEngine) -> dict[str, UUID]:
 async def _add_document(conn: AsyncConnection, tenant: UUID, name: str, acl: list[str]) -> None:
     doc = (
         await conn.execute(
-            text("INSERT INTO documents (tenant_id, title) VALUES (:t, :n) RETURNING id"),
+            text(
+                "INSERT INTO documents (tenant_id, title, source_hash)"
+                " VALUES (:t, :n, encode(sha256(convert_to(:n, 'UTF8')), 'hex')) RETURNING id"
+            ),
             {"t": tenant, "n": name},
         )
     ).scalar_one()

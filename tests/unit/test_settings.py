@@ -143,3 +143,124 @@ def test_permsync_keycloak_url_must_be_http(monkeypatch: pytest.MonkeyPatch, url
     monkeypatch.setenv("PERMSYNC_KEYCLOAK_URL", url)
     with pytest.raises(ValidationError, match="permsync_keycloak_url"):
         load()
+
+
+# --- Ingestion ------------------------------------------------------------------
+
+INGEST_VARIABLES = (
+    "INGEST_MAX_BYTES",
+    "CHUNK_MAX_CHARS",
+    "CHUNK_OVERLAP_CHARS",
+    "EMBED_BATCH_SIZE",
+)
+
+
+def test_ingest_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in INGEST_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
+    settings = load()
+    assert settings.ingest_max_bytes == 10 * 1024 * 1024
+    assert settings.chunk_overlap_chars < settings.chunk_max_chars
+    assert settings.embed_batch_size > 0
+
+
+@pytest.mark.parametrize("variable", ["INGEST_MAX_BYTES", "CHUNK_MAX_CHARS", "EMBED_BATCH_SIZE"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_ingest_sizes_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValidationError, match=variable.lower()):
+        load()
+
+
+def test_overlap_may_be_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHUNK_OVERLAP_CHARS", "0")
+    assert load().chunk_overlap_chars == 0
+
+
+@pytest.mark.parametrize(("size", "overlap"), [("500", "500"), ("500", "501"), ("500", "-1")])
+def test_overlap_must_be_smaller_than_the_chunk(
+    monkeypatch: pytest.MonkeyPatch, size: str, overlap: str
+) -> None:
+    monkeypatch.setenv("CHUNK_MAX_CHARS", size)
+    monkeypatch.setenv("CHUNK_OVERLAP_CHARS", overlap)
+    with pytest.raises(ValidationError, match=r"(?i)chunk_overlap_chars"):
+        load()
+
+
+# --- LLM providers --------------------------------------------------------------
+
+OPENAI_COMPAT = {
+    "OPENAI_COMPAT_BASE_URL": "https://llm.example/v1",
+    "OPENAI_COMPAT_API_KEY": "secret-llm",
+    "OPENAI_COMPAT_EMBED_MODEL": "embed-small",
+    "OPENAI_COMPAT_CHAT_MODEL": "chat-large",
+}
+LLM_VARIABLES = ("LLM_PROVIDER", "OLLAMA_BASE_URL", "OLLAMA_EMBED_MODEL", "OLLAMA_CHAT_MODEL")
+
+
+def test_llm_defaults_to_local_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in (*LLM_VARIABLES, *OPENAI_COMPAT):
+        monkeypatch.delenv(variable, raising=False)
+    settings = load()
+    assert settings.llm_provider == "ollama"
+    assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.ollama_embed_model == "nomic-embed-text"
+    assert settings.openai_compat_api_key is None
+
+
+def test_empty_openai_compat_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    # As in .env.example: `OPENAI_COMPAT_BASE_URL=` and friends.
+    for variable in OPENAI_COMPAT:
+        monkeypatch.setenv(variable, "")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    settings = load()
+    assert settings.openai_compat_base_url is None
+    assert settings.openai_compat_api_key is None
+
+
+def test_openai_compat_loads_with_a_secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compat")
+    for variable, value in OPENAI_COMPAT.items():
+        monkeypatch.setenv(variable, value)
+    settings = load()
+    assert settings.openai_compat_api_key is not None
+    assert settings.openai_compat_api_key.get_secret_value() == "secret-llm"
+    assert "secret-llm" not in repr(settings)
+
+
+def test_openai_compat_key_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compat")
+    for variable, value in OPENAI_COMPAT.items():
+        monkeypatch.setenv(variable, value)
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "")
+    assert load().openai_compat_api_key is None
+
+
+@pytest.mark.parametrize(
+    "variable", ["OPENAI_COMPAT_BASE_URL", "OPENAI_COMPAT_EMBED_MODEL", "OPENAI_COMPAT_CHAT_MODEL"]
+)
+def test_openai_compat_needs_url_and_models(monkeypatch: pytest.MonkeyPatch, variable: str) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compat")
+    for name, value in OPENAI_COMPAT.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv(variable, "")
+    with pytest.raises(ValidationError, match=variable):
+        load()
+
+
+def test_unknown_llm_provider_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    with pytest.raises(ValidationError, match="llm_provider"):
+        load()
+
+
+@pytest.mark.parametrize(
+    ("variable", "url"),
+    [("OLLAMA_BASE_URL", "localhost:11434"), ("OPENAI_COMPAT_BASE_URL", "ftp://llm.example")],
+)
+def test_llm_urls_must_be_http(monkeypatch: pytest.MonkeyPatch, variable: str, url: str) -> None:
+    monkeypatch.setenv(variable, url)
+    with pytest.raises(ValidationError, match=variable.lower()):
+        load()
