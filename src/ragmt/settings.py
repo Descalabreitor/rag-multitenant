@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # app_ingest: ingest, ACL changes and permsync. Sees the whole tenant, so it
     # must never serve a user's query.
     ingest_database_url: SecretStr
+    # Pool of the API's app_rw engine (the only engine the API creates).
+    database_pool_size: int = Field(default=5, gt=0)
+    database_max_overflow: int = Field(default=5, ge=0)
     # Must match the vector(n) column in the migrations.
     embedding_dim: int = Field(default=768, gt=0)
 
