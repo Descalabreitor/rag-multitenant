@@ -24,9 +24,8 @@ EXPECTED: dict[tuple[UUID, str], set[str]] = {
     (ACME, ALICE): {"CANARY-ACME-HANDBOOK", "CANARY-ACME-BUDGET", "CANARY-ACME-ALICE-REVIEW"},
     (ACME, BOB): {"CANARY-ACME-HANDBOOK", "CANARY-ACME-RUNBOOK"},
     (ACME, ERIN): {"CANARY-ACME-HANDBOOK"},
-    # alice is in finance at Acme only: Umbra's finance budget stays hidden.
-    (UMBRA, ALICE): {"CANARY-UMBRA-SAFETY"},
     (UMBRA, CAROL): {"CANARY-UMBRA-SAFETY", "CANARY-UMBRA-TRIAL"},
+    # Both tenants have a finance group; dave's is Umbra's, alice's is Acme's.
     (UMBRA, DAVE): {"CANARY-UMBRA-SAFETY", "CANARY-UMBRA-BUDGET"},
 }
 

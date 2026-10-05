@@ -1,0 +1,434 @@
+{
+  "realm": "ragmt",
+  "enabled": true,
+  "organizationsEnabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultDefaultClientScopes": [
+    "basic",
+    "profile"
+  ],
+  "defaultOptionalClientScopes": [],
+  "clientScopes": [
+    {
+      "name": "basic",
+      "description": "sub and auth_time",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "claim.name": "auth_time",
+            "jsonType.label": "long",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "description": "Username only",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "roles",
+      "description": "Role claims, for the permsync service account",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "realm_access.roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "client roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "claim.name": "resource_access.${client_id}.roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience resolve",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-resolve-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "organization",
+      "description": "Organization membership, with the organization id (= tenant id)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "organization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-organization-membership-mapper",
+          "config": {
+            "claim.name": "organization",
+            "jsonType.label": "JSON",
+            "multivalued": "true",
+            "addOrganizationId": "true",
+            "addOrganizationAttributes": "false",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "name": "acme",
+      "attributes": {
+        "organization_id": [
+          "7f66d4f3-54bf-47da-9604-0551ebdb756b"
+        ]
+      },
+      "subGroups": [
+        {
+          "name": "engineering"
+        },
+        {
+          "name": "finance"
+        }
+      ]
+    },
+    {
+      "name": "umbra",
+      "attributes": {
+        "organization_id": [
+          "17033638-c3cc-4d1e-b1fb-539941854a6e"
+        ]
+      },
+      "subGroups": [
+        {
+          "name": "finance"
+        },
+        {
+          "name": "research"
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "4cb054f8-3faa-468f-a410-3c061363d034",
+      "username": "alice",
+      "email": "alice@acme.example",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Acme",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KC_DEMO_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/acme/finance"
+      ]
+    },
+    {
+      "id": "36e84a7f-cac9-4d9b-b39f-480902553eef",
+      "username": "bob",
+      "email": "bob@acme.example",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Acme",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KC_DEMO_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/acme/engineering"
+      ]
+    },
+    {
+      "id": "ee6caa5b-fb1c-4234-b847-f5ada9b20d49",
+      "username": "erin",
+      "email": "erin@acme.example",
+      "emailVerified": true,
+      "firstName": "Erin",
+      "lastName": "Acme",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KC_DEMO_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": []
+    },
+    {
+      "id": "38425a66-cdc9-4f96-8d71-707edc2ee3b3",
+      "username": "carol",
+      "email": "carol@umbra.example",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Umbra",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KC_DEMO_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/umbra/research"
+      ]
+    },
+    {
+      "id": "19fc9100-084e-4582-a5bd-8e5df1ed928c",
+      "username": "dave",
+      "email": "dave@umbra.example",
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Umbra",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KC_DEMO_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/umbra/finance"
+      ]
+    },
+    {
+      "username": "service-account-ragmt-permsync",
+      "enabled": true,
+      "serviceAccountClientId": "ragmt-permsync",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-groups"
+        ]
+      }
+    }
+  ],
+  "organizations": [
+    {
+      "id": "7f66d4f3-54bf-47da-9604-0551ebdb756b",
+      "name": "Acme Logistics",
+      "alias": "acme",
+      "enabled": true,
+      "domains": [
+        {
+          "name": "acme.example",
+          "verified": false
+        }
+      ],
+      "members": [
+        {
+          "username": "alice",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "bob",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "erin",
+          "membershipType": "UNMANAGED"
+        }
+      ]
+    },
+    {
+      "id": "17033638-c3cc-4d1e-b1fb-539941854a6e",
+      "name": "Umbra Biotech",
+      "alias": "umbra",
+      "enabled": true,
+      "domains": [
+        {
+          "name": "umbra.example",
+          "verified": false
+        }
+      ],
+      "members": [
+        {
+          "username": "carol",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "dave",
+          "membershipType": "UNMANAGED"
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "ragmt-cli",
+      "name": "ragmt CLI",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://127.0.0.1/*"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://127.0.0.1/*"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "organization"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "ragmt-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "ragmt-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "description": "Command-line login: authorization code with PKCE (S256), loopback redirects only."
+    },
+    {
+      "clientId": "ragmt-dev-password",
+      "name": "DEV ONLY - password grant for local tests",
+      "description": "DEVELOPMENT ONLY. Lets tests and the README walkthrough get user tokens with username + password. Disabled unless KC_DEV_PASSWORD_CLIENT=true at import. Never enable it outside local development.",
+      "enabled": "${KC_DEV_PASSWORD_CLIENT:false}",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "organization"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "ragmt-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "ragmt-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "ragmt-permsync",
+      "name": "ragmt permission sync",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${PERMSYNC_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}

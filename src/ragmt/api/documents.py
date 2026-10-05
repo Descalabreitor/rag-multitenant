@@ -34,8 +34,8 @@ class Document(BaseModel):
 
 @router.get("")
 async def list_documents(conn: TenantConn) -> list[DocumentSummary]:
-    rows = await documents.list_documents(conn)
-    return [DocumentSummary(id=row.id, title=row.title) for row in rows]
+    found = await documents.list_documents(conn)
+    return [DocumentSummary(id=doc.id, title=doc.title) for doc in found]
 
 
 @router.get(
@@ -43,9 +43,9 @@ async def list_documents(conn: TenantConn) -> list[DocumentSummary]:
     responses={status.HTTP_404_NOT_FOUND: {"description": NOT_FOUND}},
 )
 async def get_document(document_id: UUID, conn: TenantConn) -> Document:
-    row = await documents.get_document(conn, document_id)
-    if row is None:
+    doc = await documents.get_document(conn, document_id)
+    if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND)
     return Document(
-        id=row.id, title=row.title, source_uri=row.source_uri, created_at=row.created_at
+        id=doc.id, title=doc.title, source_uri=doc.source_uri, created_at=doc.created_at
     )

@@ -41,6 +41,11 @@ services:
       KC_HOSTNAME: http://localhost:8080
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HEALTH_ENABLED: "true"
+      # Placeholders in keycloak/realm-export.json, resolved at import time so the
+      # file in git holds no secrets.
+      PERMSYNC_CLIENT_SECRET: ${PERMSYNC_CLIENT_SECRET:?set PERMSYNC_CLIENT_SECRET in .env}
+      KC_DEMO_USER_PASSWORD: ${KC_DEMO_USER_PASSWORD:?set KC_DEMO_USER_PASSWORD in .env}
+      KC_DEV_PASSWORD_CLIENT: ${KC_DEV_PASSWORD_CLIENT:-false}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

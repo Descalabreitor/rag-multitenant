@@ -1,13 +1,14 @@
 """The fictional world `make seed` loads: two tenants, five users, seven documents.
 
-Everything here is invented. Ids are fixed so the seed is repeatable and so the
-Keycloak realm export can reuse them: tenant ids are Organization ids and user
-subs are Keycloak user ids.
+Everything here is invented. Ids are fixed so the seed is repeatable, and
+keycloak/realm-export.json uses the same ones: tenant ids are Organization ids,
+user subs are Keycloak user ids, and memberships mirror the realm's groups
+(tests/unit/test_realm_export.py checks that they agree).
 
 Every chunk ends with its document's canary, a string that appears nowhere else.
 If a canary shows up in a response for someone outside the document's ACL, that
-is a leak. Group names repeat across tenants on purpose (both have `finance`),
-and alice belongs to both tenants with different groups.
+is a leak. Each user belongs to one tenant only, and group names repeat across
+tenants on purpose (both have `finance`).
 """
 
 from dataclasses import dataclass

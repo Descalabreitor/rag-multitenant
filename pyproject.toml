@@ -15,7 +15,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
     "pydantic-settings>=2.7",
-    "sqlalchemy[asyncio]>=2.0",
+    "sqlalchemy[asyncio]>=2.0,<3",
     "asyncpg>=0.29",
     "alembic>=1.13",
     "pgvector>=0.3",
@@ -79,4 +79,5 @@ addopts = ["-ra", "--strict-markers"]
 markers = [
     "db: needs a running PostgreSQL with pgvector",
     "leaks: isolation leak suite",
+    "e2e: end to end against the running stack (Keycloak, PostgreSQL, the API); skipped when Keycloak is unreachable",
 ]
