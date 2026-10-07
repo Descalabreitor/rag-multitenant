@@ -1,17 +1,27 @@
-"""Ingestion value objects and errors (ragmt.domain). No I/O."""
+"""Domain value objects, errors and ports (ragmt.domain). No I/O."""
 
 from collections.abc import Sequence
+from dataclasses import fields
+from uuid import UUID, uuid4
 
 import pytest
 
 from ragmt.domain import (
+    NO_CONTEXT_ANSWER,
+    Answer,
+    ChatMessage,
+    ChatProvider,
     ChunkDraft,
+    Citation,
     ConvertedDocument,
     DocumentConverter,
     DocumentTooLargeError,
     EmbeddingProvider,
     IngestError,
+    RetrievedChunk,
+    Retriever,
     UnsupportedDocumentError,
+    citation_marker,
 )
 
 
@@ -64,3 +74,71 @@ async def test_adapters_satisfy_the_ports_by_shape() -> None:
     assert converter.convert(b"# Hi", "hi.md").markdown == "# Hi"
     assert await embedder.embed_documents(["a", "b"]) == [[1.0, 0.0], [1.0, 0.0]]
     assert len(await embedder.embed_query("q")) == embedder.dim
+
+
+# --- Retrieval and generation (ADR 0009) ----------------------------------------
+
+DOCUMENT_ID = UUID("4d9a4c3e-2b1f-4e6a-9c7d-0f1e2d3c4b5a")
+
+
+def _retrieved(ordinal: int = 2, heading: str | None = "Budget") -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=uuid4(),
+        document_id=DOCUMENT_ID,
+        ordinal=ordinal,
+        title="Q3 plan",
+        heading=heading,
+        content="text",
+        score=0.83,
+    )
+
+
+def test_citation_marker_format() -> None:
+    marker = citation_marker(DOCUMENT_ID, 3)
+    assert marker == "[doc:4d9a4c3e-2b1f-4e6a-9c7d-0f1e2d3c4b5a#3]"
+    assert _retrieved(ordinal=3).marker == marker
+
+
+def test_retrieved_chunk_rejects_negative_ordinals() -> None:
+    with pytest.raises(ValueError, match="ordinal"):
+        _retrieved(ordinal=-1)
+
+
+def test_citation_carries_only_document_title_and_heading() -> None:
+    citation = _retrieved().citation()
+    assert citation == Citation(document_id=DOCUMENT_ID, title="Q3 plan", heading="Budget")
+    assert {f.name for f in fields(Citation)} == {"document_id", "title", "heading"}
+
+
+def test_no_type_carries_an_embedding() -> None:
+    for cls in (RetrievedChunk, Citation, Answer):
+        assert not any("embedding" in f.name or "vector" in f.name for f in fields(cls))
+
+
+def test_answer_without_context_names_no_model() -> None:
+    answer = Answer(text=NO_CONTEXT_ANSWER, citations=(), model=None)
+    assert answer.model is None
+    with pytest.raises(AttributeError):
+        answer.text = "other"  # type: ignore[misc]
+
+
+class _Retriever:
+    async def search(
+        self, conn: str, query_vector: Sequence[float], k: int
+    ) -> list[RetrievedChunk]:
+        return [_retrieved()][:k]
+
+
+class _Chat:
+    model = "fake-chat"
+
+    async def complete(self, system: str, messages: Sequence[ChatMessage]) -> str:
+        return f"{len(messages)} {messages[-1].content}"
+
+
+async def test_retriever_and_chat_satisfy_the_ports_by_shape() -> None:
+    retriever: Retriever[str] = _Retriever()
+    chat: ChatProvider = _Chat()
+    assert len(await retriever.search("conn", [0.0, 1.0], 1)) == 1
+    reply = await chat.complete("system", [ChatMessage(role="user", content="hi")])
+    assert (chat.model, reply) == ("fake-chat", "1 hi")

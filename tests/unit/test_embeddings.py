@@ -365,6 +365,8 @@ BASE_ENV = {
     "OPENAI_COMPAT_API_KEY": API_KEY,
     "OPENAI_COMPAT_EMBED_MODEL": "embed-small",
     "OPENAI_COMPAT_CHAT_MODEL": "chat-large",
+    # Unset: the chat adapter follows LLM_PROVIDER unless a test says otherwise.
+    "CHAT_PROVIDER": "",
 }
 
 

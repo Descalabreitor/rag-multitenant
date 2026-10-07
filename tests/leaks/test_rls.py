@@ -280,7 +280,6 @@ async def test_reader_cannot_forge_audit_event(world: World, target: str) -> Non
 @pytest.mark.parametrize(
     "statement",
     [
-        "SELECT * FROM audit_events",
         "UPDATE audit_events SET action = 'x'",
         "DELETE FROM audit_events",
         "TRUNCATE audit_events",
@@ -290,6 +289,63 @@ async def test_audit_events_are_insert_only(world: World, var: str, statement: s
     with pytest.raises(asyncpg.InsufficientPrivilegeError):
         async with session(var, world.tenants["a"], "alice") as conn:
             await conn.execute(statement)
+
+
+async def test_writer_cannot_read_audit_events(world: World) -> None:
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        async with session(INGEST, world.tenants["a"]) as conn:
+            await conn.execute("SELECT * FROM audit_events")
+
+
+# Only tenant admins read audit_events through app_rw (migration b7d41c2e9f05).
+
+
+async def _make_admin(tenant: UUID, sub: str) -> None:
+    async with session(INGEST, tenant) as conn:
+        await conn.execute(
+            "INSERT INTO memberships (tenant_id, user_sub, group_name) VALUES ($1, $2, 'admins')",
+            tenant,
+            sub,
+        )
+
+
+async def _audit_actors(tenant: UUID | None, user: str | None) -> list[str]:
+    async with session(READER, tenant, user) as conn:
+        rows = await conn.fetch("SELECT actor_sub FROM audit_events")
+    return sorted(row["actor_sub"] for row in rows)
+
+
+async def test_tenant_admin_reads_only_their_tenants_audit_events(world: World) -> None:
+    a, b = world.tenants["a"], world.tenants["b"]
+    for tenant in (a, b):
+        for actor in ("alice", "bob"):
+            async with session(READER, tenant, actor) as conn:
+                await conn.execute(INSERT_AUDIT, tenant, actor)
+    await _make_admin(a, "bob")
+
+    assert await _audit_actors(a, "bob") == ["alice", "bob"]
+    # Same sub, other tenant: bob isn't an admin in B, so he reads nothing there.
+    assert await _audit_actors(b, "bob") == []
+
+
+@pytest.mark.parametrize(
+    ("tenant_key", "user"),
+    [
+        ("a", "alice"),  # a member of hr, not of admins
+        ("a", "nobody"),  # no memberships at all
+        ("a", None),  # no user set
+        (None, None),  # no context at all
+    ],
+)
+async def test_non_admins_read_no_audit_events(
+    world: World, tenant_key: str | None, user: str | None
+) -> None:
+    a = world.tenants["a"]
+    async with session(READER, a, "alice") as conn:
+        await conn.execute(INSERT_AUDIT, a, "alice")
+    await _make_admin(world.tenants["b"], "alice")  # an admin elsewhere changes nothing here
+    tenant = None if tenant_key is None else world.tenants[tenant_key]
+    assert await _audit_actors(tenant, user) == []
 
 
 async def test_unknown_tenant_sees_nothing() -> None:

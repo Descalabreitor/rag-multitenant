@@ -16,7 +16,9 @@ from ragmt.tenancy import tenant_session
 pytestmark = [pytest.mark.db, pytest.mark.leaks]
 
 TENANT_TABLES = ("tenants", "memberships", "documents", "document_acl", "chunks", "audit_events")
-READABLE_TABLES = TENANT_TABLES[:-1]  # audit_events has no SELECT grant at all
+# audit_events: app_ingest can't SELECT it, and app_rw only as a tenant admin
+# (tests/leaks/test_rls.py).
+READABLE_TABLES = TENANT_TABLES[:-1]
 
 # (tenant, user) -> groups. alice is in different groups in each tenant, and the
 # group names are the same in both: neither may carry across.

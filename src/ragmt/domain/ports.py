@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from ragmt.domain.ingest import ConvertedDocument
+from ragmt.domain.retrieval import ChatMessage, RetrievedChunk
 
 
 class DocumentConverter(Protocol):
@@ -38,3 +39,34 @@ class EmbeddingProvider(Protocol):
         ...
 
     async def embed_query(self, text: str) -> list[float]: ...
+
+
+class Retriever[Conn](Protocol):
+    """Finds the chunks closest to a query vector (ADR 0009).
+
+    `conn` must be the request's `tenant_session` connection as app_rw: the
+    retriever adds no tenant or ACL filter of its own, RLS decides what it can
+    see. `Conn` is the adapter's connection type, so the domain names no driver.
+    Returns at most `k` chunks, closest first, never their embeddings.
+    """
+
+    async def search(
+        self, conn: Conn, query_vector: Sequence[float], k: int
+    ) -> list[RetrievedChunk]: ...
+
+
+class ChatProvider(Protocol):
+    """A chat model with no tools and no database access (ADR 0009).
+
+    It sees only what the caller puts in `system` and `messages`: retrieved
+    chunks arrive there already filtered by RLS and wrapped as untrusted data.
+    """
+
+    @property
+    def model(self) -> str:
+        """The model name, recorded in `Answer.model` and in the audit row."""
+        ...
+
+    async def complete(self, system: str, messages: Sequence[ChatMessage]) -> str:
+        """The model's reply to `messages` under the `system` prompt."""
+        ...

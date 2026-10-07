@@ -197,7 +197,13 @@ OPENAI_COMPAT = {
     "OPENAI_COMPAT_EMBED_MODEL": "embed-small",
     "OPENAI_COMPAT_CHAT_MODEL": "chat-large",
 }
-LLM_VARIABLES = ("LLM_PROVIDER", "OLLAMA_BASE_URL", "OLLAMA_EMBED_MODEL", "OLLAMA_CHAT_MODEL")
+LLM_VARIABLES = (
+    "LLM_PROVIDER",
+    "CHAT_PROVIDER",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_EMBED_MODEL",
+    "OLLAMA_CHAT_MODEL",
+)
 
 
 def test_llm_defaults_to_local_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,6 +214,35 @@ def test_llm_defaults_to_local_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.ollama_embed_model == "nomic-embed-text"
     assert settings.openai_compat_api_key is None
+    assert settings.chat_provider is None
+    assert settings.chat_provider_name == "ollama"
+
+
+def test_empty_chat_provider_follows_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    # As in .env.example: `CHAT_PROVIDER=`.
+    monkeypatch.setenv("LLM_PROVIDER", "fake")
+    monkeypatch.setenv("CHAT_PROVIDER", "")
+    assert load().chat_provider_name == "fake"
+
+
+def test_chat_provider_overrides_llm_provider_for_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("CHAT_PROVIDER", "fake")
+    settings = load()
+    assert settings.llm_provider == "ollama"
+    assert settings.chat_provider_name == "fake"
+
+
+def test_openai_compat_chat_needs_only_the_chat_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("CHAT_PROVIDER", "openai_compat")
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", OPENAI_COMPAT["OPENAI_COMPAT_BASE_URL"])
+    monkeypatch.setenv("OPENAI_COMPAT_EMBED_MODEL", "")
+    monkeypatch.setenv("OPENAI_COMPAT_CHAT_MODEL", "")
+    with pytest.raises(ValidationError, match="OPENAI_COMPAT_CHAT_MODEL"):
+        load()
+    monkeypatch.setenv("OPENAI_COMPAT_CHAT_MODEL", "chat-large")
+    assert load().chat_provider_name == "openai_compat"
 
 
 def test_empty_openai_compat_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,4 +298,119 @@ def test_unknown_llm_provider_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
 def test_llm_urls_must_be_http(monkeypatch: pytest.MonkeyPatch, variable: str, url: str) -> None:
     monkeypatch.setenv(variable, url)
     with pytest.raises(ValidationError, match=variable.lower()):
+        load()
+
+
+# --- Retrieval and generation (ADR 0009) ----------------------------------------
+
+RETRIEVAL_VARIABLES = (
+    "RETRIEVAL_K",
+    "HNSW_EF_SEARCH",
+    "HNSW_ITERATIVE_SCAN",
+    "HNSW_MAX_SCAN_TUPLES",
+    "ASK_MAX_QUESTION_CHARS",
+    "ASK_MAX_CONTEXT_CHARS",
+    "CHAT_TIMEOUT_SECONDS",
+    "AUDIT_STORE_QUERY_TEXT",
+    "CHUNK_MAX_CHARS",
+)
+
+
+def test_retrieval_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in RETRIEVAL_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
+    settings = load()
+    assert settings.retrieval_k == 5
+    assert settings.hnsw_ef_search >= settings.retrieval_k
+    assert settings.hnsw_iterative_scan == "relaxed_order"
+    assert settings.hnsw_max_scan_tuples > 0
+    assert settings.ask_max_context_chars >= settings.chunk_max_chars
+    assert settings.chat_timeout_seconds > 0
+    assert settings.audit_store_query_text is False
+
+
+def test_retrieval_values_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RETRIEVAL_K", "8")
+    monkeypatch.setenv("HNSW_EF_SEARCH", "100")
+    monkeypatch.setenv("HNSW_ITERATIVE_SCAN", "strict_order")
+    monkeypatch.setenv("CHAT_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("AUDIT_STORE_QUERY_TEXT", "true")
+    settings = load()
+    assert (settings.retrieval_k, settings.hnsw_ef_search) == (8, 100)
+    assert settings.hnsw_iterative_scan == "strict_order"
+    assert settings.chat_timeout_seconds == 2.5
+    assert settings.audit_store_query_text is True
+
+
+@pytest.mark.parametrize("mode", ["off", "relaxed_order", "strict_order"])
+def test_iterative_scan_modes(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    monkeypatch.setenv("HNSW_ITERATIVE_SCAN", mode)
+    assert load().hnsw_iterative_scan == mode
+
+
+@pytest.mark.parametrize("mode", ["", "relaxed", "RELAXED_ORDER", "on"])
+def test_unknown_iterative_scan_mode_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("HNSW_ITERATIVE_SCAN", mode)
+    with pytest.raises(ValidationError, match="hnsw_iterative_scan"):
+        load()
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "RETRIEVAL_K",
+        "HNSW_EF_SEARCH",
+        "HNSW_MAX_SCAN_TUPLES",
+        "ASK_MAX_QUESTION_CHARS",
+        "ASK_MAX_CONTEXT_CHARS",
+        "CHAT_TIMEOUT_SECONDS",
+    ],
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_retrieval_values_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValidationError, match=variable.lower()):
+        load()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"), [("RETRIEVAL_K", "101"), ("HNSW_EF_SEARCH", "1001")]
+)
+def test_retrieval_upper_bounds(monkeypatch: pytest.MonkeyPatch, variable: str, value: str) -> None:
+    monkeypatch.setenv("RETRIEVAL_K", "5")
+    monkeypatch.setenv("HNSW_EF_SEARCH", "40")
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValidationError, match=variable.lower()):
+        load()
+
+
+def test_ef_search_must_cover_k(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RETRIEVAL_K", "20")
+    monkeypatch.setenv("HNSW_EF_SEARCH", "19")
+    with pytest.raises(ValidationError, match="HNSW_EF_SEARCH"):
+        load()
+    monkeypatch.setenv("HNSW_EF_SEARCH", "20")
+    assert load().hnsw_ef_search == 20
+
+
+def test_context_must_fit_one_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHUNK_MAX_CHARS", "2000")
+    monkeypatch.setenv("CHUNK_OVERLAP_CHARS", "200")
+    monkeypatch.setenv("ASK_MAX_CONTEXT_CHARS", "1999")
+    with pytest.raises(ValidationError, match="ASK_MAX_CONTEXT_CHARS"):
+        load()
+    monkeypatch.setenv("ASK_MAX_CONTEXT_CHARS", "2000")
+    assert load().ask_max_context_chars == 2000
+
+
+def test_chat_models_are_reused_for_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b")
+    assert load().ollama_chat_model == "qwen2.5:7b"
+    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "")
+    with pytest.raises(ValidationError, match="ollama_chat_model"):
         load()

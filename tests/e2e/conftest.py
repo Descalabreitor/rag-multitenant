@@ -8,9 +8,11 @@ Every test here is skipped unless Keycloak answers at OIDC_ISSUER. Then:
   (KC_BOOTSTRAP_ADMIN_*), never through the database.
 - The API is the one at E2E_API_URL (`make e2e` starts it), or, when that is
   unset, a uvicorn process started here on a free port. Both run with
-  LLM_PROVIDER=ollama, so uploads are embedded by the real model: Ollama must
-  be up at OLLAMA_BASE_URL with OLLAMA_EMBED_MODEL pulled, or the tests fail
-  saying what to run.
+  LLM_PROVIDER=ollama, so uploads and questions are embedded by the real model
+  and `POST /ask` is answered by OLLAMA_CHAT_MODEL: Ollama must be up at
+  OLLAMA_BASE_URL with both models pulled, or the tests fail saying what to
+  run. With CHAT_PROVIDER=fake (`make e2e FAKE_CHAT=1`), answers come from
+  FakeChat instead and the chat model isn't needed.
 - Before the tests, the seed corpus is loaded as app_ingest (`make seed`) and
   permsync runs once, so the database agrees with the realm. The seed itself
   uses fake embeddings: these tests check access, not ranking.
@@ -99,12 +101,19 @@ class Keycloak:
         return token
 
 
-class RealmAdmin:
-    """The admin API as the bootstrap admin of the master realm. Test setup only."""
+class _BootstrapAdminAuth(httpx.Auth):
+    """A fresh master-realm admin token for every admin API call.
+
+    admin-cli tokens live 60 s by default, and the session's admin outlives
+    that once slow tests (a chat model on a CPU) run before the ones using it.
+    """
 
     def __init__(self, keycloak: Keycloak) -> None:
+        self._token_url = f"{keycloak.base_url}/realms/master/protocol/openid-connect/token"
+
+    def auth_flow(self, request: httpx.Request) -> Iterator[httpx.Request]:
         response = httpx.post(
-            f"{keycloak.base_url}/realms/master/protocol/openid-connect/token",
+            self._token_url,
             data={
                 "grant_type": "password",
                 "client_id": "admin-cli",
@@ -114,9 +123,17 @@ class RealmAdmin:
             timeout=_TIMEOUT,
         )
         response.raise_for_status()
+        request.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
+        yield request
+
+
+class RealmAdmin:
+    """The admin API as the bootstrap admin of the master realm. Test setup only."""
+
+    def __init__(self, keycloak: Keycloak) -> None:
         self._http = httpx.Client(
             base_url=f"{keycloak.base_url}/admin/realms/{REALM}/",
-            headers={"Authorization": f"Bearer {response.json()['access_token']}"},
+            auth=_BootstrapAdminAuth(keycloak),
             timeout=_TIMEOUT,
         )
 
@@ -211,20 +228,52 @@ def _free_port() -> int:
         return port
 
 
+def fake_chat() -> bool:
+    """True when the API answers with FakeChat (CHAT_PROVIDER=fake, `make e2e FAKE_CHAT=1`)."""
+    return os.environ.get("CHAT_PROVIDER") == "fake"
+
+
 @pytest.fixture(scope="session")
-def ollama(keycloak: Keycloak) -> None:
-    """Fails, saying what to run, unless Ollama serves the embedding model."""
+def chat_model() -> str:
+    """The model name `POST /ask` should report when it calls the chat model."""
+    if fake_chat():
+        return "fake-chat"
+    return os.environ.get("OLLAMA_CHAT_MODEL") or "llama3.1:8b"
+
+
+@pytest.fixture(scope="session")
+def ollama(keycloak: Keycloak, chat_model: str) -> None:
+    """Fails, saying what to run, unless Ollama serves the embedding model, and
+    the chat model too unless answers come from FakeChat."""
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-    hint = f"run `docker compose up -d --wait ollama` and pull {model} (`make e2e` does both)"
+    models = [os.environ.get("OLLAMA_EMBED_MODEL") or "nomic-embed-text"]
+    if not fake_chat():
+        models.append(chat_model)
+    hint = (
+        f"run `docker compose up -d --wait ollama` and pull {' and '.join(models)} "
+        "(`make e2e` does both; `make e2e FAKE_CHAT=1` skips the chat model)"
+    )
     try:
         response = httpx.get(f"{base_url}/api/tags", timeout=3)
         response.raise_for_status()
     except httpx.HTTPError:
         pytest.fail(f"Ollama is not reachable at {base_url}: {hint}")
     pulled = {entry["name"] for entry in response.json().get("models", [])}
-    if model not in pulled and f"{model}:latest" not in pulled:
-        pytest.fail(f"{model} is not pulled in Ollama: {hint}")
+    for model in models:
+        if model not in pulled and f"{model}:latest" not in pulled:
+            pytest.fail(f"{model} is not pulled in Ollama: {hint}")
+
+
+# What the API started here runs with; `make e2e` exports the same. RETRIEVAL_K
+# covers every chunk any seed user can read (alice: 8), so each search returns
+# all of them and the seed's fake vectors don't decide what the model sees
+# (tests/e2e/test_ask.py). An 8B chat model on a CPU can pass the 120 s default.
+E2E_RETRIEVAL_K = 10
+API_ENV = {
+    "LLM_PROVIDER": "ollama",
+    "RETRIEVAL_K": str(E2E_RETRIEVAL_K),
+    "CHAT_TIMEOUT_SECONDS": "300",
+}
 
 
 # The API embeds a probe text at startup (the provider's check), which loads the
@@ -267,7 +316,7 @@ def api(
                 [*command, "--host", "127.0.0.1", "--port", str(port)],
                 stdout=out,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, "LLM_PROVIDER": "ollama"},
+                env={**os.environ, **API_ENV},
             )
     try:
         _wait_until_healthy(url, process, log)

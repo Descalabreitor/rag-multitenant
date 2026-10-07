@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # --- LLM providers ----------------------------------------------------------
     # "fake": hash-derived embeddings for CI and tests, meaningless for ranking.
     llm_provider: Literal["ollama", "openai_compat", "fake"] = "ollama"
+    # The chat adapter, when it differs from LLM_PROVIDER (unset: the same). The
+    # e2e check sets "fake" to run without the chat model (`make e2e FAKE_CHAT=1`).
+    chat_provider: Literal["ollama", "openai_compat", "fake"] | None = None
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = Field(default="nomic-embed-text", min_length=1)
     ollama_chat_model: str = Field(default="llama3.1:8b", min_length=1)
@@ -90,6 +93,27 @@ class Settings(BaseSettings):
     openai_compat_api_key: SecretStr | None = None
     openai_compat_embed_model: str | None = None
     openai_compat_chat_model: str | None = None
+
+    # --- Retrieval and generation (ADR 0009) ------------------------------------
+    # Chunks retrieved per question.
+    retrieval_k: int = Field(default=5, gt=0, le=100)
+    # pgvector's hnsw.ef_search: the candidate list of one index scan. It must be at
+    # least RETRIEVAL_K, or one scan can't return k rows (pgvector allows 1-1000).
+    hnsw_ef_search: int = Field(default=40, gt=0, le=1000)
+    # pgvector's hnsw.iterative_scan (>= 0.8.0). With RLS filtering the scan, "off"
+    # can return fewer than k chunks in small tenants (ADR 0001). "relaxed_order"
+    # keeps scanning until k rows pass, and the query re-sorts them by distance.
+    hnsw_iterative_scan: Literal["off", "relaxed_order", "strict_order"] = "relaxed_order"
+    # pgvector's hnsw.max_scan_tuples: where an iterative scan gives up.
+    hnsw_max_scan_tuples: int = Field(default=20_000, gt=0)
+    # Longest question accepted, and the most chunk text put in one prompt.
+    ask_max_question_chars: int = Field(default=2000, gt=0)
+    ask_max_context_chars: int = Field(default=12_000, gt=0)
+    # Upper bound on one chat completion, in seconds.
+    chat_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Store the question's text in its audit row. Off by default (GDPR): the row
+    # always has its SHA-256, which is enough to correlate repeated questions.
+    audit_store_query_text: bool = False
 
     @field_validator("database_url", "ingest_database_url")
     @classmethod
@@ -121,6 +145,7 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
+        "chat_provider",
         "openai_compat_base_url",
         "openai_compat_api_key",
         "openai_compat_embed_model",
@@ -181,20 +206,39 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _ef_search_covers_k(self) -> Self:
+        if self.hnsw_ef_search < self.retrieval_k:
+            raise ValueError("HNSW_EF_SEARCH must be at least RETRIEVAL_K")
+        return self
+
+    @model_validator(mode="after")
+    def _context_fits_a_chunk(self) -> Self:
+        # Otherwise even the best chunk would have to be cut to fit the prompt.
+        if self.ask_max_context_chars < self.chunk_max_chars:
+            raise ValueError("ASK_MAX_CONTEXT_CHARS must be at least CHUNK_MAX_CHARS")
+        return self
+
+    @property
+    def chat_provider_name(self) -> Literal["ollama", "openai_compat", "fake"]:
+        """The provider the chat adapter comes from: CHAT_PROVIDER, else LLM_PROVIDER."""
+        return self.chat_provider or self.llm_provider
+
+    @model_validator(mode="after")
     def _openai_compat_is_complete(self) -> Self:
         # The API key stays optional: local OpenAI-compatible servers often need none.
+        required: list[str] = []
         if self.llm_provider == "openai_compat":
+            required.append("openai_compat_embed_model")
+        if self.chat_provider_name == "openai_compat":
+            required.append("openai_compat_chat_model")
+        if required:
             missing = [
                 name.upper()
-                for name in (
-                    "openai_compat_base_url",
-                    "openai_compat_embed_model",
-                    "openai_compat_chat_model",
-                )
+                for name in ("openai_compat_base_url", *required)
                 if getattr(self, name) is None
             ]
             if missing:
-                raise ValueError(f"LLM_PROVIDER=openai_compat needs {', '.join(missing)}")
+                raise ValueError(f"openai_compat needs {', '.join(missing)}")
         return self
 
 

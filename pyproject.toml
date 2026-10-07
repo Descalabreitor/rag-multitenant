@@ -29,6 +29,10 @@ dependencies = [
     "python-multipart>=0.0.20",
 ]
 
+[project.scripts]
+# The command-line client (ragmt.cli). It only talks to the API over HTTP.
+ragctl = "ragmt.cli.main:run"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",

@@ -54,6 +54,8 @@ async def test_healthz_needs_no_auth(client: httpx.AsyncClient) -> None:
         ("POST", "/documents"),
         ("PUT", f"/documents/{uuid4()}/acl"),
         ("DELETE", f"/documents/{uuid4()}"),
+        ("POST", "/ask"),
+        ("GET", "/audit"),
     ],
 )
 async def test_documents_without_credentials_is_401(

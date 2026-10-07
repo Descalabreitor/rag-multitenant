@@ -65,7 +65,7 @@ def _routes() -> list[RouteContext]:
 
 def test_no_get_route_depends_on_the_writer_engine() -> None:
     readers = [r for r in _routes() if "GET" in (r.methods or ())]
-    assert {r.path for r in readers} >= {"/documents", "/documents/{document_id}"}
+    assert {r.path for r in readers} >= {"/documents", "/documents/{document_id}", "/audit"}
     for route in readers:
         assert get_ingest_service not in set(_calls(route.dependant)), route.path
 

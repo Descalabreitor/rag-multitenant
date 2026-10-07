@@ -5,8 +5,9 @@ What a reader sees is checked the way a user request would see it: through
 app_rw with the user's context (`visible_chunks`), so the triggers and policies
 are part of every assertion.
 
-audit_events can't be read by any runtime role (insert-only), so the audit tests
-capture the parameters of the service's own INSERTs on its engine. A call that
+audit_events is insert-only, and only a tenant admin can read it back (through
+app_rw, ADR 0009), so the audit tests capture the parameters of the service's
+own INSERTs on its engine instead. A call that
 returns has committed them.
 """
 

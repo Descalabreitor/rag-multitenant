@@ -11,6 +11,9 @@ The API creates two database engines in its lifespan (ADR 0004, 0008):
 MIGRATOR_DATABASE_URL is not even a setting. The embedding provider is built
 once here and checked against EMBEDDING_DIM before the app accepts requests:
 startup fails if it is unreachable or answers with vectors of another size.
+The chat provider is built once too, but not contacted: a chat model that is
+down only fails `POST /ask` (503), not startup. Both go into the `AskService`
+on the app_rw engine (ADR 0009).
 
 Run it with `uvicorn --factory ragmt.api.app:create_app`.
 """
@@ -21,8 +24,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from ragmt.adapters.llm import build_embedding_provider
-from ragmt.api import documents, health, writes
+from ragmt.adapters.llm import build_chat_provider, build_embedding_provider
+from ragmt.api import ask, audit, documents, health, writes
+from ragmt.ask import AskService
+from ragmt.retrieval import PgVectorRetriever
 from ragmt.settings import Settings, get_settings
 from ragmt.tenancy.writer import open_writer
 
@@ -42,12 +47,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Read by ragmt.tenancy.get_engine; routes never touch it directly.
         app.state.engine = engine
         embedder = build_embedding_provider(settings)
+        chat = build_chat_provider(settings)
         try:
             await embedder.check()
+            # Read by ragmt.api.ask.get_ask_service. Searches on app_rw only.
+            app.state.ask_service = AskService(
+                engine, embedder, PgVectorRetriever.from_settings(settings), chat, settings
+            )
             async with open_writer(app, settings, embedder):
                 yield
         finally:
+            app.state.ask_service = None
             del app.state.engine
+            await chat.aclose()
             await embedder.aclose()
             await engine.dispose()
 
@@ -55,4 +67,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(documents.router)
     app.include_router(writes.router)
+    app.include_router(ask.router)
+    app.include_router(audit.router)
     return app
