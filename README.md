@@ -13,7 +13,7 @@ All numbers come from one laptop (AMD Ryzen 7 260, 32 GB, Docker Desktop) and ar
 | Does anything leak? | **0 leaks in 393,256 attempts**: 2,153 random worlds and 9,043 states checked against an oracle, plus 246 leak tests, none failed | [`leaks.md`](docs/results/leaks.md) |
 | Does filtering hurt recall? | On a shared HNSW index, yes, for small tenants: recall@5 is 0.90–1.00 for tenants holding 10% or more of the table, but 0.28–0.60 for a 0.1% tenant. The query the service runs today (the planner's choice under RLS) gets **1.00 for every tenant**, and partitions by tenant get ≥ 0.99 | [`eval.md`](docs/results/eval.md) |
 | What does RLS cost? | **Nothing measurable on the same plan**: 7.02 vs 7.03 ms p50 against a superuser with the same filter as a `WHERE`. The real cost is the planner: it can't see the user's groups, picks an exact sort for the largest tenant, and pays 98.67 ms p50 where the no-RLS query takes 4.82 ms. Partitions bring it to 3.88 ms | [`eval.md`](docs/results/eval.md) |
-| How fast is revocation? | **Not measured yet.** By design it is bounded by the permsync interval (`PERMSYNC_INTERVAL_SECONDS`, 60 s by default) and doesn't wait for tokens to expire. `make revocation` measures it | [`make revocation`](#reproduce) |
+| How fast is revocation? | **Within one permsync cycle, with the same token:** median 40 s / max 58.6 s at the default 60 s interval, max 9.6 s at 10 s and 4.7 s at 5 s (20 runs each). Trusting the token's `groups` claim instead would keep access for up to the token lifetime (38–247 s in 5 runs with 5-minute tokens) | [`revocation.md`](docs/results/revocation.md) |
 | Do answers stay inside the ACL? | **No citation outside the asking user's ACL in 39 cases**, 19/19 unanswerable questions answered "I don't know", citation precision 1.00, 18/20 answerable questions correct (`llama3.1:8b`, a 7-document corpus; a baseline, not a quality claim) | [`quality.md`](docs/results/quality.md) |
 
 ### No leaks
@@ -71,7 +71,7 @@ On the same plan the policy is free, and the denormalized ACL ([ADR 0003](docs/a
 
 ### Revocation window
 
-Permissions come from a `memberships` table that `permsync` copies from Keycloak, not from the token's `groups` claim ([ADR 0002](docs/adr/0002-resolve-group-memberships-in-the-database.md)). A user removed from a group therefore loses access at the next sync cycle, with the same token, instead of when the token expires. The end-to-end tests check that it happens (`tests/e2e/test_ask.py::test_leaving_a_group_in_keycloak_removes_its_citations_after_one_sync`). The window hasn't been measured yet: `make revocation` runs it against the real stack and writes `docs/results/revocation.md`.
+Permissions come from a `memberships` table that `permsync` copies from Keycloak, not from the token's `groups` claim ([ADR 0002](docs/adr/0002-resolve-group-memberships-in-the-database.md)). A user removed from a group therefore loses access at the next sync cycle, with the same token, instead of when the token expires. The end-to-end tests check that it happens (`tests/e2e/test_ask.py::test_leaving_a_group_in_keycloak_removes_its_citations_after_one_sync`). Measured with `make revocation` ([`revocation.md`](docs/results/revocation.md)): every run lost access within one cycle (max 58.6 s at 60 s, 9.6 s at 10 s, 4.7 s at 5 s; medians 40.0, 5.8 and 2.4 s), while a token carrying `groups` stayed valid for up to its remaining lifetime.
 
 ### Answer quality (baseline)
 
@@ -301,7 +301,7 @@ Admins are the members of `/<organization>/admins` in Keycloak. Non-admins get 4
 ## Limitations
 
 - **Measured on one laptop, with synthetic vectors** for recall and latency, default PostgreSQL memory settings and one run. The ratios carry over; the milliseconds won't ([`eval.md`](docs/results/eval.md), caveats).
-- **The revocation window isn't measured yet.** It is bounded by design by the permsync interval plus any Keycloak outage, during which revocations wait ([ADR 0007](docs/adr/0007-permission-sync.md)).
+- **Revocation waits for the next permsync cycle** (one interval at most, [`revocation.md`](docs/results/revocation.md)), and longer if Keycloak is down: during an outage revocations wait ([ADR 0007](docs/adr/0007-permission-sync.md)).
 - **The service's plan is slow for broad-access users in large tenants** (about 100 ms p50 at 50,000 chunks), and on the shared HNSW index tiny tenants lose recall. Partitioning by tenant fixes both in the benchmark, but it is only proposed ([ADR 0010](docs/adr/0010-partition-chunks-by-tenant.md)): onboarding a tenant would need DDL, and thousands of partitions haven't been measured.
 - **Prompt injection is contained, not eliminated.** A readable chunk can steer the answer the user reads, though not what they can access.
 - **The answer-quality numbers are a baseline**: 7 documents, questions written by the author of the documents, a model that grades itself ([`quality.md`](docs/results/quality.md)).
