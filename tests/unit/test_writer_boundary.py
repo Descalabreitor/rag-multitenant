@@ -76,6 +76,7 @@ def test_every_route_on_the_writer_engine_checks_the_admin_first() -> None:
     assert {(r.path, m) for r in writers for m in r.methods or ()} == {
         ("/documents", "POST"),
         ("/documents/{document_id}/acl", "PUT"),
+        ("/documents/{document_id}/content", "PUT"),
         ("/documents/{document_id}", "DELETE"),
     }
     for route in writers:

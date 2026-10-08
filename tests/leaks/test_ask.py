@@ -13,7 +13,7 @@ JWT validation is replaced as in test_api.py: `X-Test-Principal: <tenant>:<sub>`
 import asyncio
 import hashlib
 import os
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -316,6 +316,68 @@ async def test_audit_row_holds_exactly_the_retrieved_chunks(
         assert QUESTION not in str(event)
     # Chunk ids and scores, never chunk content.
     assert not any(c in str(event) for c in ALL_CANARIES)
+
+
+def strings(value: Any) -> Iterator[str]:
+    """Every key and value in a JSON document, as text."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+    else:
+        yield str(value)
+
+
+async def test_audit_without_query_text_serves_no_question_text(
+    world: AskWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With AUDIT_STORE_QUERY_TEXT=false, GET /audit holds ids, hashes, scores and
+    subs, never a question or chunk content. Not even for rows stored while the
+    setting was on: the table is insert-only, so they keep their text."""
+    stored_earlier = f"Earlier question {uuid4().hex}, stored as text"
+    asked_now = f"Later question {uuid4().hex}, not stored"
+    async with api(world, monkeypatch, FakeChat(), audit_store_query_text=True) as client:
+        await ask(client, "a", "alice", stored_earlier)
+        # While the setting is on, the admin does see it: the check below isn't vacuous.
+        assert stored_earlier in str(await ask_events(client, "a", ADMIN["a"]))
+
+    async with api(world, monkeypatch, FakeChat(), audit_store_query_text=False) as client:
+        await ask(client, "a", "alice", asked_now)
+        await ask(client, "a", "bob", asked_now)
+        # A write too, whose title and content are a question: write rows hold neither.
+        upload = await client.post(
+            "/documents",
+            files={"file": ("q.md", f"# {asked_now}\n\n{asked_now}\n".encode())},
+            headers=as_user("a", ADMIN["a"]),
+        )
+        assert upload.status_code == 201, upload.text
+        response = await client.get("/audit", headers=as_user("a", ADMIN["a"]))
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    events = body["events"]
+    assert [e["action"] for e in events] == ["ingest", "ask", "ask", "ask"]
+    for event in events:
+        assert set(event) == {"id", "occurred_at", "actor_sub", "action", "chunk_ids", "details"}
+    for event in events[1:]:
+        # The hash is kept, so repeated questions can still be correlated.
+        assert set(event["details"]) == {"scores", "model", "question_sha256"}
+    question_hashes = [e["details"]["question_sha256"] for e in events[1:]]
+    assert question_hashes == [
+        hashlib.sha256(q.encode()).hexdigest() for q in (asked_now, asked_now, stored_earlier)
+    ]
+
+    fields = list(strings(body))
+    for question in (stored_earlier, asked_now):
+        # No field holds the question, nor a recognisable piece of it.
+        for fragment in (question, *question.split(",")):
+            assert not any(fragment.strip() in f for f in fields), fragment
+    # Nor any chunk content (canaries), document title or file name.
+    for secret in (*ALL_CANARIES, *DOCUMENTS, "q.md"):
+        assert not any(secret in f for f in fields), secret
 
 
 async def test_empty_retrieval_answers_i_dont_know_without_calling_the_model(

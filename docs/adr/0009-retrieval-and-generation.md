@@ -31,6 +31,8 @@ The model is the least trusted part of the path. Chunk text is written by whoeve
 
 **Reading the audit trail.** `GET /audit` lists the tenant's rows to its admins (group `admins`, ADR 0008), newest first, with keyset pagination (`limit`, then `before` = the previous page's `next_before`; ids only grow, so inserts during paging don't shift pages). Migration `b7d41c2e9f05` grants app_rw SELECT on `audit_events` with one policy: `tenant_id` is the session's tenant AND the session's user has an `admins` row in `memberships` for that tenant. Everyone else, and a session with no user, reads zero rows, so a non-admin's SELECT now returns nothing where it used to fail with "permission denied". UPDATE, DELETE and TRUNCATE stay revoked, and app_ingest still can't SELECT. There is no policy cycle: the new policy reads `memberships`, whose app_rw policy reads only the session settings, and no policy reads `audit_events`. The route also runs `is_tenant_admin` first, on the request's `TenantConn`, and a non-admin (another tenant's admin included, since the tenant comes from the token) gets FastAPI's own 404 body for an unknown path. An index on `(tenant_id, id)` serves the pages.
 
+**What the trail shows (reviewed 2026-10-07).** Each row has `id`, `occurred_at`, `actor_sub`, `action`, `chunk_ids` and `details`. `details` holds ids, counts, hashes, scores, model names, principals and subs (permsync rows: the changed `[sub, group]` pairs), never chunk content, titles or file names. While `AUDIT_STORE_QUERY_TEXT` is off, `GET /audit` also drops the `question` key from ask rows written while it was on: the table is insert-only, so those rows keep the text, and turning the setting off must stop it being served (`ragmt.audit.list_events(with_question_text=...)`). The `question_sha256` stays, so repeated questions can still be correlated. `tests/leaks/test_ask.py` walks every key and value of the response and fails if any holds the question text.
+
 **Dependencies.** None added: escaping uses the standard library, and the chat adapters use httpx like the embedding adapters.
 
 **Settings.** `RETRIEVAL_K` (5), `HNSW_EF_SEARCH` (40, at least `RETRIEVAL_K`), `HNSW_ITERATIVE_SCAN` (`off` / `relaxed_order` / `strict_order`, default `relaxed_order`), `HNSW_MAX_SCAN_TUPLES` (20000), `ASK_MAX_QUESTION_CHARS` (2000), `ASK_MAX_CONTEXT_CHARS` (12000, at least `CHUNK_MAX_CHARS`), `CHAT_TIMEOUT_SECONDS` (120), `AUDIT_STORE_QUERY_TEXT` (false). The chat model comes from the existing `LLM_PROVIDER` settings: `OLLAMA_CHAT_MODEL` or `OPENAI_COMPAT_CHAT_MODEL`. `CHAT_PROVIDER` (unset by default) picks a different chat adapter than `LLM_PROVIDER`; the end-to-end check sets it to `fake` to run without the chat model (`make e2e FAKE_CHAT=1`).
@@ -51,7 +53,8 @@ The model is the least trusted part of the path. Chunk text is written by whoeve
 - **Pro:** What the model can see is exactly what RLS let through, and its reply can't reach the database or add citations to documents that weren't retrieved.
 - **Pro:** The audit trail records every retrieval with what was returned, without storing the question unless configured.
 - **Con:** Escaping and delimiters reduce prompt injection, they don't remove it. A chunk can still steer the answer the user reads. The leak suite should include injected chunks, and check that answers cite nothing outside the retrieved set.
-- **Con:** A plain SHA-256 of a short question can be found by hashing guesses. It correlates repeated questions but isn't anonymisation. A keyed hash would need a secret to manage.
+- **Con:** A plain SHA-256 of a short question can be found by hashing guesses. It correlates repeated questions but isn't anonymisation, and an admin who reads the trail can confirm a guess at what a user asked. A keyed hash would need a secret to manage.
+- **Con:** Hiding stored question text when the setting is off is a read filter, not erasure: the text is still in the table, readable by a database superuser (no runtime role or the migrator can bypass RLS to read it).
 - **Con:** The audit row says what was retrieved, not whether the model answered: a failed or timed-out completion still leaves the row.
 - **Con:** Admins read every user's rows: who asked, when, the ids and scores of the chunks retrieved (including chunks of documents the admin can't read; ids only, never content), and the question text when `AUDIT_STORE_QUERY_TEXT` is on. Admins can already change any document's ACL, so this adds metadata, not access. It does matter for GDPR when question text is stored.
 - **Con:** Admin rights follow `memberships`, so a removed admin can read the trail until the next `permsync` cycle (ADR 0002, 0008).
@@ -80,3 +83,27 @@ What this shows:
 - Forcing HNSW on the 48k table (`enable_sort = off`) gave an 18 ms index scan for carol and 1 ms for alice, but the inflated cost estimate also turned on JIT (235 ms). Plans aren't forced in the application. If broad-access users on mid-sized tables turn out slow, the options (per-tenant partial HNSW indexes, or partitions, ADR 0001) belong in `docs/results/` with measurements.
 
 The leak test for overfiltering (`tests/leaks/test_retriever.py`) forces the HNSW plan with `enable_sort = off` in its own transaction, because CI's table is small enough to get the exact plan.
+
+## Results (measured 2026-10-08)
+
+`make eval` (`eval/bench.py`, tables and charts in `docs/results/eval.md`): 100,000 synthetic chunks (seed 42, 768 dimensions) in a separate `ragmt_eval` database, tenants holding 50%, 10%, 1% and 0.1% of the table, three users each (no groups, one group, all groups), the retriever's own statement as app_rw, plans forced per transaction and checked with EXPLAIN. k = 5, the service's HNSW settings.
+
+| | recall@5, all cells | p50 / p95 ms, 50% tenant | p50 / p95 ms, 0.1% tenant |
+|---|---|---|---|
+| HNSW, iterative scan off | 0.33 | 3.8 / 5.7 | 3.3 / 5.1 |
+| HNSW, `relaxed_order` (the default) | 0.79 | 7.0 / 14.8 | 114 / 268 |
+| HNSW, `strict_order` | 0.70 | 4.1 / 7.1 | 98 / 338 |
+| Exact (no index scan) | 1.00 | 102 / 253 | 8.9 / 19 |
+| Planner's choice under RLS (what the service runs) | 1.00 | 99 / 260 | 4.9 / 12 |
+| Partitions by tenant, `relaxed_order` (scratch) | 1.00 | 3.9 / 12 | 3.0 / 8.9 |
+
+What this confirms and what it changes:
+
+- **`relaxed_order` stays the default.** With iterative scans off, recall@5 falls to 0.20 to 0.66 at the 10% tenant and to 0.06 or less at 1% and below, where every query comes back short. `strict_order` is below `relaxed_order` at every size.
+- **`HNSW_MAX_SCAN_TUPLES` (20,000) is too low for tiny tenants on the shared index.** The 0.1% tenant's users hit it: 21 of 60 queries came back short, recall 0.28 to 0.60, 114 ms. Raising it trades latency for recall on exactly these tenants; partitions remove the problem instead.
+- **The planner misjudges the ACL filter.** It folds the tenant setting into its estimate (501 rows for the 50% tenant, 1 for the 0.1% one) but can't see the user's principals, so it guesses about 1% for `acl_principals && …` against 22% to 83% actually readable. The exact plan then looks cheap, and the service gets it for every tenant at this table size: correct (recall 1.00), but 99 ms p50 and 260 ms p95 for the large tenant, 238 ms p50 for its all-groups user. The no-RLS baseline, with the principals as literals, estimates better and picks HNSW there (4.8 ms). This is the "broad-access users on mid-sized tables" case above, now measured.
+- **The denormalised ACL stays (ADR 0003).** Same forced HNSW plan, same recall budget: the EXISTS policy is 2.6× slower at the 50% tenant (18 vs 7 ms p50), 1.3× at 10%, 1.8× at 1%; under exact plans they are within 17% of each other. That is not the negligible difference that would bring back the normalised design.
+- **RLS itself costs nothing measurable** on the same plan: 7.02 vs 7.03 ms p50 at the 50% tenant against the superuser with the policy written as WHERE. On small tenants the baseline was slower (202 vs 114 ms), because its plan checked the array overlap before `tenant_id` on every scanned tuple, where the policy checks `tenant_id` first.
+- **Partitions by tenant fix both problems at once**: recall ≥ 0.99 for every tenant and user, p50 3 to 4 ms and p95 under 13 ms whatever the tenant's size, with the same policy text, no tenant filter in the query (the executor prunes from the policy's `current_setting`, 8 of 9 partitions removed) and the same plan for everyone. ADR 0010 proposes adopting them.
+
+Caveats: one run on one laptop (Docker Desktop, default PostgreSQL memory settings), synthetic vectors, and the scratch indexes were built in one pass where `public.chunks`' was built row by row (under the same filter, that difference was worth about 0.03 of recall). A full run takes about 15 minutes with the corpus loaded, 25 from an empty database.

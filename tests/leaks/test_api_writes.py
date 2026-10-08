@@ -1,9 +1,9 @@
 """The write routes end to end against PostgreSQL, under fixed Principals.
 
 The app is the real one (lifespan, both engines, RLS, triggers), with fake
-embeddings and JWT validation replaced as in test_api.py. Admins are added to the
-leak world here: ada in tenant A and bea in tenant B, both in group `admins` and
-nothing else, so they read only what an ACL gives them.
+embeddings and JWT validation replaced as in test_api.py. The `admins` fixture
+(conftest.py) adds ada in tenant A and bea in tenant B to the leak world, both in
+group `admins` and nothing else, so they read only what an ACL gives them.
 
 What readers see is checked twice: over HTTP (`/documents`) and as chunk
 contents through app_rw (`visible_chunks`). What was written is checked as
@@ -29,21 +29,7 @@ from tests.upload_helpers import STREAM_CONTENT_TYPE, CountingStream
 
 pytestmark = [pytest.mark.db, pytest.mark.leaks]
 
-ADMINS = {"a": "ada", "b": "bea"}
 NOT_FOUND = {"detail": "Document not found"}
-
-
-@pytest.fixture
-async def admins(world: World) -> World:
-    for tenant, sub in ADMINS.items():
-        async with session(INGEST, world.tenants[tenant]) as conn:
-            await conn.execute(
-                "INSERT INTO memberships (tenant_id, user_sub, group_name)"
-                " VALUES ($1, $2, 'admins')",
-                world.tenants[tenant],
-                sub,
-            )
-    return world
 
 
 @asynccontextmanager
@@ -84,6 +70,37 @@ async def upload(
         data=data,
         headers=as_user(tenant, sub),
     )
+
+
+async def replace(
+    client: httpx.AsyncClient,
+    tenant: str,
+    sub: str,
+    document_id: UUID | str,
+    content: bytes,
+    **extra: str,
+) -> httpx.Response:
+    """PUT /documents/{id}/content as a given user."""
+    return await client.put(
+        f"/documents/{document_id}/content",
+        files={"file": ("doc.md", content)},
+        data=extra,
+        headers=as_user(tenant, sub),
+    )
+
+
+async def ask_text(client: httpx.AsyncClient, tenant: str, sub: str) -> str:
+    """The whole /ask response. FakeChat echoes its prompt, so this holds every
+    chunk that reached the model, and the citations."""
+    response = await client.post(
+        "/ask", json={"question": "What does it say?"}, headers=as_user(tenant, sub)
+    )
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+# Room for every chunk a leak-world user can read, so /ask retrieves all of them.
+ASK_ALL = {"retrieval_k": 20}
 
 
 async def stored(tenant: UUID) -> dict[UUID, tuple[str, bool, int]]:
@@ -224,6 +241,19 @@ async def test_an_oversized_upload_is_413_without_reading_the_whole_body(admins:
     assert await stored(admins.tenants["a"]) == before
 
 
+async def test_a_non_admin_replace_never_reads_the_body(admins: World) -> None:
+    stream = CountingStream(total=1024 * 1024)
+    async with api(admins) as client:
+        response = await client.put(
+            f"/documents/{admins.documents['public_a']}/content",
+            content=stream,
+            headers={"Content-Type": STREAM_CONTENT_TYPE, **as_user("a", "alice")},
+        )
+    assert response.status_code == 404
+    assert response.json() == NOT_FOUND
+    assert stream.sent == 0
+
+
 async def test_a_non_admin_upload_never_reads_the_body(admins: World) -> None:
     stream = CountingStream(total=1024 * 1024)
     async with api(admins) as client:
@@ -270,6 +300,7 @@ async def _id_routes(
         ),
         await client.delete(f"/documents/{document_id}", headers=headers),
         await client.delete(f"/documents/{document_id}", params={"purge": "true"}, headers=headers),
+        await replace(client, tenant, sub, document_id, document("intruder")),
     ]
 
 
@@ -316,6 +347,7 @@ async def test_unknown_and_deleted_ids_are_the_same_404(admins: World) -> None:
                 f"/documents/{deleted}/acl", json={"principals": ["tenant:*"]}, headers=headers
             ),
             await client.delete(f"/documents/{deleted}", headers=headers),
+            await replace(client, "a", "ada", deleted, document("revived")),
         ):
             assert response.status_code == 404
             assert response.content == expected
@@ -402,3 +434,76 @@ async def test_a_soft_deleted_document_can_still_be_purged(admins: World) -> Non
         )
     assert response.status_code == 204
     assert target not in await stored(tenant)
+
+
+# --- new content -------------------------------------------------------------------------
+
+
+async def test_new_content_replaces_the_chunks_and_keeps_the_acl(admins: World) -> None:
+    tenant = admins.tenants["a"]
+    async with api(admins, **ASK_ALL) as client:
+        created = await upload(client, "a", "ada", "old_version", acl='["user:alice"]')
+        document_id = created.json()["id"]
+        assert "CANARY-old_version" in await ask_text(client, "a", "alice")
+
+        response = await replace(client, "a", "ada", document_id, document("new_version"))
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "id": document_id,
+            "title": "new_version",
+            "chunks": 1,
+            "unchanged": False,
+        }
+
+        answer = await ask_text(client, "a", "alice")
+        assert "CANARY-old_version" not in answer
+        assert "CANARY-new_version" in answer
+        assert "new_version" in await titles(client, "a", "alice")
+        # Same ACL as before: the admin who replaced it still can't read it.
+        for sub in ("ada", "bob"):
+            assert "new_version" not in await titles(client, "a", sub)
+            assert "_version" not in await ask_text(client, "a", sub)
+
+    assert await acl_of(tenant, UUID(document_id)) == {"user:alice"}
+    assert (await stored(tenant))[UUID(document_id)] == ("new_version", False, 1)
+    assert not await reads_canary(tenant, "alice", "old_version")
+    assert await reads_canary(tenant, "alice", "new_version")
+
+
+async def test_the_same_content_is_unchanged_and_writes_nothing(admins: World) -> None:
+    tenant = admins.tenants["a"]
+    async with api(admins) as client:
+        created = await upload(client, "a", "ada", "same_bytes")
+        before = await stored(tenant)
+        response = await replace(client, "a", "ada", created.json()["id"], document("same_bytes"))
+        audit = await client.get("/audit", headers=as_user("a", "ada"))
+    assert response.status_code == 200, response.text
+    assert response.json() == {**created.json(), "unchanged": True}
+    assert await stored(tenant) == before
+    assert [e["action"] for e in audit.json()["events"]][:1] == ["ingest"]
+
+
+async def test_content_of_another_live_document_is_409(admins: World) -> None:
+    tenant = admins.tenants["a"]
+    async with api(admins) as client:
+        await upload(client, "a", "ada", "first")
+        second = await upload(client, "a", "ada", "second")
+        before = await stored(tenant)
+        response = await replace(client, "a", "ada", second.json()["id"], document("first"))
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Another document has the same content"}
+    assert await stored(tenant) == before
+
+
+async def test_an_acl_with_new_content_is_422_and_changes_nothing(admins: World) -> None:
+    tenant = admins.tenants["a"]
+    target = admins.documents["hr_a"]
+    before = await stored(tenant)
+    async with api(admins) as client:
+        response = await replace(
+            client, "a", "ada", target, document("with_acl"), acl='["tenant:*"]'
+        )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid upload"}
+    assert await stored(tenant) == before
+    assert await acl_of(tenant, target) == {"group:hr"}

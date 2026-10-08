@@ -11,7 +11,10 @@ leak through "same group name, other tenant" must show up here.
 
 import hashlib
 import os
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -35,6 +38,9 @@ DOCUMENTS: dict[str, tuple[str, list[str]]] = {
     "public_b": ("b", ["tenant:*"]),
 }
 MEMBERSHIPS = [("a", "alice", "hr"), ("b", "alice", "hr")]
+# Tenant admins for the write routes (the `admins` fixture): group `admins` only,
+# so they read nothing an ACL doesn't give them.
+ADMINS = {"a": "ada", "b": "bea"}
 
 
 @dataclass
@@ -118,3 +124,97 @@ async def world() -> World:
                 for ordinal in range(2):
                     await insert_chunk(conn, tenant, doc, canary(name), ordinal)
     return w
+
+
+@pytest.fixture
+async def admins(world: World) -> World:
+    """The world, plus ADMINS in each tenant's `admins` group."""
+    for tenant, sub in ADMINS.items():
+        async with session(INGEST, world.tenants[tenant]) as conn:
+            await conn.execute(
+                "INSERT INTO memberships (tenant_id, user_sub, group_name)"
+                " VALUES ($1, $2, 'admins')",
+                world.tenants[tenant],
+                sub,
+            )
+    return world
+
+
+# --- the property test's tally, and docs/results/leaks.md ------------------------------
+
+# What each kind of check in test_properties.py compares, in report order.
+CHECK_KINDS = {
+    "documents": "`GET /documents` equals the oracle's readable documents (ids and titles)",
+    "document_by_id": "`GET /documents/{id}` is 404 for a document the user may not read",
+    "chunks": "`SELECT … FROM chunks` as app_rw equals the oracle's readable chunks",
+    "retrieval": "`PgVectorRetriever.search` returns only readable chunks",
+    "ask_citations": "`POST /ask` cites, and its prompt holds, only readable chunks",
+    "ask_canaries": "`POST /ask` holds no canary of a document the user may not read",
+    "foreign_write": "a write naming another tenant finds nothing and changes nothing",
+}
+
+
+@dataclass
+class LeakTally:
+    """Counted by test_properties.py as it runs; written out by `pytest_sessionfinish`."""
+
+    checks: Counter[str] = field(default_factory=Counter)
+    examples: int = 0
+    steps: int = 0
+
+    @property
+    def total(self) -> int:
+        return sum(self.checks.values())
+
+
+TALLY = LeakTally()
+
+# `make leaks` sets it to docs/results/leaks.md.
+REPORT_ENV = "LEAKS_REPORT"
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    path = os.environ.get(REPORT_ENV)
+    if path:
+        Path(path).write_text(_report(session, exitstatus), encoding="utf-8", newline="\n")
+
+
+def _report(session: pytest.Session, exitstatus: int) -> str:
+    profile = os.environ.get("HYPOTHESIS_PROFILE", "ci")
+    when = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    passed = exitstatus == pytest.ExitCode.OK and session.testsfailed == 0
+    if not passed:
+        headline = (
+            f"**FAILED** after {TALLY.total} checks: a leak or an error. The pytest output"
+            " has the failing example; Hypothesis prints the shortest one it found."
+        )
+    elif TALLY.examples == 0:
+        headline = "**The property test did not run** (no database?): no leak count."
+    else:
+        headline = f"**0 leaks in {TALLY.total} attempts.**"
+    lines = [
+        "# Leak suite results",
+        "",
+        headline,
+        "",
+        f"Written by `make leaks` on {when}: `pytest -m leaks` with the Hypothesis profile"
+        f" `{profile}`, {session.testscollected} tests collected, {session.testsfailed} failed.",
+        "",
+        "## Property test (`tests/leaks/test_properties.py`)",
+        "",
+        f"{TALLY.examples} random worlds of 2 or 3 tenants, {TALLY.steps} states checked"
+        " (after setup and after every operation). In each state, every user of every"
+        " tenant is compared with a plain-Python oracle (`tests/leaks/oracle.py`) that"
+        " replays the same operations without SQL. An attempt is one comparison for one"
+        " user in one state, or one write aimed at another tenant:",
+        "",
+        "| Check | Compares | Attempts |",
+        "|---|---|---:|",
+        *(f"| {kind} | {what} | {TALLY.checks[kind]} |" for kind, what in CHECK_KINDS.items()),
+        f"| **Total** | | **{TALLY.total}** |",
+        "",
+        "Only the property test's checks are counted. The other leak tests are fixed"
+        " cases (one per leak scenario) and count as tests above.",
+        "",
+    ]
+    return "\n".join(lines)

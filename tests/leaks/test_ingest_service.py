@@ -369,3 +369,25 @@ async def test_every_write_is_audited_without_content(world: World, harness: Har
     dumped = json.dumps([a.details for a in harness.audits])
     for secret in (*contents, *new_contents, result.title, "secret-name"):
         assert secret not in dumped
+
+
+async def test_deletes_audit_the_acl_they_remove(world: World, harness: Harness) -> None:
+    """ADR 0008: the ACL rows of a deleted document are gone, so its audit row keeps them."""
+    tenant = world.tenants["a"]
+    acl = ["user:dave", "group:hr", "tenant:*"]
+    soft_data, _ = new_document("soft")
+    hard_data, _ = new_document("hard")
+    soft_doc = (await harness.service.ingest(tenant, ADMIN, soft_data, "s.md", acl)).document_id
+    hard_doc = (await harness.service.ingest(tenant, ADMIN, hard_data, "h.md", acl)).document_id
+
+    await harness.service.soft_delete(tenant, ADMIN, soft_doc)
+    # A purge of a live document, without a soft delete first.
+    await harness.service.hard_delete(tenant, ADMIN, hard_doc)
+
+    soft, hard = harness.audits[-2:]
+    assert (soft.action, soft.details["document_id"]) == ("soft_delete", str(soft_doc))
+    assert (hard.action, hard.details["document_id"]) == ("hard_delete", str(hard_doc))
+    for row in (soft, hard):
+        assert row.details["old_principals"] == sorted(acl)
+    # And they really were removed.
+    assert await acl_of(tenant, soft_doc) == await acl_of(tenant, hard_doc) == set()

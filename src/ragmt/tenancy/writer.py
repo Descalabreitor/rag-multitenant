@@ -85,6 +85,11 @@ class TenantWriter:
     async def ingest(self, data: bytes, filename: str, acl: list[str] | None) -> IngestResult:
         return await self.service.ingest(self.admin.tenant_id, self.admin.sub, data, filename, acl)
 
+    async def replace(self, document_id: UUID, data: bytes, filename: str) -> IngestResult:
+        return await self.service.replace(
+            self.admin.tenant_id, self.admin.sub, document_id, data, filename
+        )
+
     async def set_acl(self, document_id: UUID, principals: list[str]) -> tuple[str, ...]:
         return await self.service.set_acl(
             self.admin.tenant_id, self.admin.sub, document_id, principals

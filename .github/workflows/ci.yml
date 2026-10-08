@@ -40,6 +40,22 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: mypy
 
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history, not only the last commit
+      # The CLI from its pinned image: no action license or token needed.
+      # Findings are redacted in the log.
+      - name: Scan the repository history
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.28.0
+          git /repo --no-banner --redact --verbose
+
   tests:
     name: Tests (unit + db)
     runs-on: ubuntu-latest
@@ -65,6 +81,10 @@ jobs:
 
       - name: Apply migrations (as migrator)
         run: alembic upgrade head
+
+      # Exercises every migration's downgrade, then rebuilds head for the tests.
+      - name: Downgrade to base and upgrade again
+        run: alembic downgrade base && alembic upgrade head
 
       - run: pytest
 

@@ -32,6 +32,7 @@ uploads/
 # Raw runs, caches and generated corpora are not.
 eval/runs/
 eval/.cache/
+docs/results/raw/
 seed/generated/
 *.parquet
 *.jsonl.gz

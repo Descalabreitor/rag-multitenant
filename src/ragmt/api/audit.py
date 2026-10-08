@@ -8,13 +8,18 @@ audit_events shows rows only to the tenant's admins, and only that tenant's.
 
 Pages are newest first, keyset-paginated by id: pass `next_before` from one
 page as `before` to get the next.
+
+Rows carry ids, counts, hashes, scores, principals and subs, never document
+content or titles. The question text of an ask row is served only while
+AUDIT_STORE_QUERY_TEXT is on (`create_app` puts the setting on the app state),
+including for rows stored while it was on before.
 """
 
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from ragmt import audit
@@ -28,6 +33,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 # FastAPI's own body for an unknown path, so the route looks absent to non-admins.
 NOT_FOUND = "Not Found"
 MAX_PAGE_SIZE = 200
+SHOW_QUESTION_TEXT_KEY = "audit_store_query_text"
 
 
 async def require_audit_reader(
@@ -37,6 +43,11 @@ async def require_audit_reader(
     if not await is_tenant_admin(conn, principal.sub):
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
     return principal
+
+
+def get_show_question_text(request: Request) -> bool:
+    """AUDIT_STORE_QUERY_TEXT, as `create_app` stored it. Missing means off."""
+    return getattr(request.app.state, SHOW_QUESTION_TEXT_KEY, False) is True
 
 
 class AuditEventOut(BaseModel):
@@ -57,12 +68,15 @@ class AuditPageOut(BaseModel):
 async def list_audit_events(
     _admin: Annotated[Principal, Depends(require_audit_reader)],
     conn: TenantConn,
+    show_question_text: Annotated[bool, Depends(get_show_question_text)],
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
     before: Annotated[
         int | None, Query(ge=1, description="`next_before` of the previous page")
     ] = None,
 ) -> AuditPageOut:
-    page = await audit.list_events(conn, limit=limit, before=before)
+    page = await audit.list_events(
+        conn, limit=limit, before=before, with_question_text=show_question_text
+    )
     return AuditPageOut(
         events=[
             AuditEventOut(

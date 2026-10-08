@@ -7,7 +7,10 @@ migration b7d41c2e9f05): `list_events` adds no tenant or admin filter of its own
 An "ask" row stores what was retrieved, not what was asked: the chunk ids (the
 column), and in `details` their scores in the same order, the chat model that
 will answer (null when none will be called) and the SHA-256 of the question.
-The question text goes in only when AUDIT_STORE_QUERY_TEXT is on.
+The question text goes in only when AUDIT_STORE_QUERY_TEXT is on, and
+`list_events` hands it out only while the setting is on: the table is
+insert-only, so rows written while it was on keep the text, and turning it off
+must stop them being served.
 """
 
 import hashlib
@@ -26,6 +29,8 @@ from sqlalchemy.types import Uuid
 from ragmt.domain import RetrievedChunk
 
 ASK_ACTION: Final = "ask"
+# The key of an ask row's `details` that holds the question text, when stored.
+QUESTION_KEY: Final = "question"
 
 _audit_events = table(
     "audit_events",
@@ -58,7 +63,7 @@ def ask_details(
         "question_sha256": question_sha256(question),
     }
     if store_text:
-        details["question"] = question
+        details[QUESTION_KEY] = question
     return details
 
 
@@ -108,11 +113,16 @@ class AuditPage:
     next_before: int | None
 
 
-async def list_events(conn: AsyncConnection, *, limit: int, before: int | None) -> AuditPage:
+async def list_events(
+    conn: AsyncConnection, *, limit: int, before: int | None, with_question_text: bool
+) -> AuditPage:
     """Newest first (by id, the insert order), at most `limit` rows with ids below `before`.
 
     Keyset pagination: the table only grows, so a page never repeats or skips a
     row because of inserts made while a client pages through it.
+
+    Without `with_question_text` (pass AUDIT_STORE_QUERY_TEXT), ask rows come
+    back without their question text, even rows stored while it was on.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -132,9 +142,17 @@ async def list_events(conn: AsyncConnection, *, limit: int, before: int | None) 
             actor_sub=row.actor_sub,
             action=row.action,
             chunk_ids=tuple(row.chunk_ids),
-            details=row.details,
+            details=_readable_details(row.action, row.details, with_question_text),
         )
         for row in rows[:limit]
     )
     next_before = events[-1].id if len(rows) > limit else None
     return AuditPage(events=events, next_before=next_before)
+
+
+def _readable_details(
+    action: str, details: dict[str, Any], with_question_text: bool
+) -> dict[str, Any]:
+    if action != ASK_ACTION or with_question_text:
+        return details
+    return {k: v for k, v in details.items() if k != QUESTION_KEY}

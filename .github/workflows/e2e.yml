@@ -1,8 +1,8 @@
 name: E2E
 
-# Manual only: starting Keycloak and Ollama takes a few minutes, so the
-# end-to-end check stays out of the default CI run (ci.yml). Run it from the
-# Actions tab.
+# Nightly and manual: starting Keycloak and Ollama takes a few minutes, so the
+# end-to-end check stays out of the default CI run (ci.yml). Run it by hand from
+# the Actions tab; the nightly run always answers with FakeChat (below).
 #
 # Cost of the chat model (llama3.1:8b, about 4.9 GB): the first run downloads it
 # (a few minutes) and saves it to the Actions cache, which counts against the
@@ -12,6 +12,8 @@ name: E2E
 # "fake_chat" to answer with FakeChat instead: no chat model pulled or cached,
 # the same access and citation checks, and a run that is minutes shorter.
 on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC, with FakeChat
   workflow_dispatch:
     inputs:
       fake_chat:
@@ -27,6 +29,9 @@ jobs:
     name: End to end (Keycloak + PostgreSQL + Ollama + API)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # "1" on the schedule (no inputs there) or when fake_chat is ticked.
+      FAKE_CHAT: ${{ (github.event_name == 'schedule' || inputs.fake_chat) && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,11 +60,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/ollama/models
-          key: ollama-nomic-embed-text${{ !inputs.fake_chat && '-llama3.1-8b' || '' }}-${{ hashFiles('compose.yaml') }}
+          key: ollama-nomic-embed-text${{ env.FAKE_CHAT != '1' && '-llama3.1-8b' || '' }}-${{ hashFiles('compose.yaml') }}
 
       # Starts postgres, keycloak and ollama, pulls the models (a no-op download
       # when the cache hit), migrates, starts the API, runs pytest -m e2e.
-      - run: make e2e FAKE_CHAT=${{ inputs.fake_chat && '1' || '' }}
+      - run: make e2e FAKE_CHAT="$FAKE_CHAT"
 
       # The container writes as root; the cache action runs as the runner user.
       - name: Save the models

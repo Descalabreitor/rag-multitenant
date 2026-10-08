@@ -9,23 +9,26 @@ Response bodies are generic on purpose. The reason is logged at INFO, never the 
 """
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ragmt.auth.jwks import JwksCache, JwksUnavailableError, keycloak_jwks_url
 from ragmt.auth.tokens import InvalidTokenError, NoTenantError, TokenValidator
 from ragmt.domain import Principal
-from ragmt.settings import Settings, get_settings
+from ragmt.settings import Settings
 
 logger = logging.getLogger(__name__)
 
 # auto_error=False: a missing or non-Bearer header gets the same 401 as a bad token.
 _bearer = HTTPBearer(auto_error=False, description="Keycloak access token")
 
-_validator: TokenValidator | None = None
+_VALIDATOR_KEY = "token_validator"
+_HTTP_KEY = "jwks_http"
 
 
 def build_token_validator(settings: Settings, client: httpx.AsyncClient) -> TokenValidator:
@@ -42,16 +45,36 @@ def build_token_validator(settings: Settings, client: httpx.AsyncClient) -> Toke
     )
 
 
-async def get_token_validator() -> TokenValidator:
-    """The process-wide validator, so the JWKS cache is shared by all requests.
+@asynccontextmanager
+async def open_token_validator(app: FastAPI, settings: Settings) -> AsyncIterator[None]:
+    """Create the JWKS HTTP client and the validator for the app's lifetime.
 
-    Built on first use (on the event loop, so there is no race). Tests replace
-    it with `app.dependency_overrides[get_token_validator]`.
+    One validator per app, so the JWKS cache (and its refetch rate limit) is
+    shared by all requests. Creating the client doesn't connect; the client is
+    closed when the lifespan ends.
     """
-    global _validator
-    if _validator is None:
-        _validator = build_token_validator(get_settings(), httpx.AsyncClient())
-    return _validator
+    client = httpx.AsyncClient()
+    try:
+        setattr(app.state, _HTTP_KEY, client)
+        setattr(app.state, _VALIDATOR_KEY, build_token_validator(settings, client))
+        try:
+            yield
+        finally:
+            delattr(app.state, _VALIDATOR_KEY)
+            delattr(app.state, _HTTP_KEY)
+    finally:
+        await client.aclose()
+
+
+async def get_token_validator(request: Request) -> TokenValidator:
+    """The validator built in the app's lifespan (`open_token_validator`).
+
+    Tests replace it with `app.dependency_overrides[get_token_validator]`.
+    """
+    validator = getattr(request.app.state, _VALIDATOR_KEY, None)
+    if not isinstance(validator, TokenValidator):
+        raise RuntimeError("no token validator: was the app started through its lifespan?")
+    return validator
 
 
 def _unauthorized() -> HTTPException:

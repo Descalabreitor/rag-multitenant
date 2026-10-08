@@ -18,7 +18,9 @@ Phase 3 adds writes through the API: upload a document, change its ACL, delete i
 - The admin check runs before any write. It reads the caller's own `memberships` through `app_rw` (the `TenantConn` of the request), so the answer comes from the same policies as every read, and a failed check never touches the writer engine.
 - No read route depends on the writer engine.
 
-**Status codes.** `POST /documents` from a non-admin returns 403: the route exists for everyone, and refusing it reveals nothing. Routes with a document id (`PUT /documents/{id}/acl`, `DELETE /documents/{id}`) return 404 to non-admins, and for documents of other tenants, so a caller can't learn that an id exists (the same rule as the read routes).
+**Status codes.** `POST /documents` from a non-admin returns 403: the route exists for everyone, and refusing it reveals nothing. Routes with a document id (`PUT /documents/{id}/content`, `PUT /documents/{id}/acl`, `DELETE /documents/{id}`) return 404 to non-admins, and for documents of other tenants, so a caller can't learn that an id exists (the same rule as the read routes). A non-admin's body is never read.
+
+**New content (added 2026-10-07).** `PUT /documents/{id}/content` takes a multipart `file`, like an upload, and runs `IngestService.replace`: the chunks, title and `source_hash` are rebuilt from the file, and the ACL stays as it is. The same bytes as the current content are 200 with `unchanged: true` and write nothing (no audit row either). Bytes that another live document of the tenant already has are 409, since the unique index allows one live copy. An `acl` field is refused (422) rather than ignored: ACL changes go through `PUT /documents/{id}/acl`, and a caller who sends one expects it to apply. The old chunks are deleted in the same transaction that inserts the new ones, so `/ask` never sees both, or the old content after the commit.
 
 **Default ACL.** An upload without an ACL gets `["user:<uploader sub>"]`: only the uploader can read it until someone widens it. An explicit ACL replaces the default; it is not added to it.
 
@@ -36,7 +38,9 @@ Phase 3 adds writes through the API: upload a document, change its ACL, delete i
 2. The chunk trigger (`chunks_set_acl_principals`) yields `{}` for any chunk whose document isn't live. An ACL added to a deleted document, or a chunk written to one, therefore never becomes readable.
 3. The `app_rw` policy on `documents` also requires `deleted_at IS NULL`.
 
-The ACL rows go, not just the chunk copies, because the `document_acl` policy for `app_rw` can't check `documents.deleted_at`. The `documents` policy already reads `document_acl`, and a policy in the other direction is a cycle that PostgreSQL refuses ("infinite recursion detected in policy"). With the rows gone, `app_rw` sees nothing of a deleted document in any table. `app_ingest` still sees the document and its chunks, with empty ACLs. Restoring (setting `deleted_at` back to NULL) brings no access back: the document stays invisible until an admin sets an ACL. The delete route should record the ACL it removes in its audit row.
+The ACL rows go, not just the chunk copies, because the `document_acl` policy for `app_rw` can't check `documents.deleted_at`. The `documents` policy already reads `document_acl`, and a policy in the other direction is a cycle that PostgreSQL refuses ("infinite recursion detected in policy"). With the rows gone, `app_rw` sees nothing of a deleted document in any table. `app_ingest` still sees the document and its chunks, with empty ACLs. Restoring (setting `deleted_at` back to NULL) brings no access back: the document stays invisible until an admin sets an ACL. The delete's audit row records the ACL it removes, sorted, as `old_principals`: a soft delete holds the document's last ACL, and so does a purge of a live document. A purge after a soft delete records `[]`, because the soft delete already removed it.
+
+**Erasure.** `DELETE /documents/{id}?purge=true` is the erasure path (GDPR). It deletes the document row, and its `document_acl` rows and chunks go by cascade, whether or not it was soft-deleted first. Afterwards no reader finds its content through `/documents`, `/documents/{id}` (404) or `/ask`, and app_ingest finds no rows of it. The audit trail keeps what it always held: the chunk ids of earlier retrievals (now pointing at nothing), the document id, counts, hashes and principals, never content or titles. `tests/leaks/test_erasure.py` checks all of it.
 
 ADR 0003's drift check becomes: a live document's chunks carry its ACL, and a deleted document's chunks carry `{}`. With layer 1 both reduce to "matches `document_acl`", so the existing drift test still holds.
 
@@ -69,6 +73,7 @@ mammoth is at least 1.11 because that release turned off external file access by
 - **Pro:** The downgrade fails closed: deleted documents have no ACL rows, so they stay invisible once `deleted_at` is gone.
 - **Pro:** One module holds the writer engine, and a test enforces it, so a read route can't pick it up by accident.
 - **Con:** Restoring a document needs a new ACL. The previous one only survives in the audit log.
+- **Con:** A purge doesn't reach the audit trail: `source_hash` (of the file) and the ids stay. A SHA-256 of a whole file can't be reversed, but whoever holds a copy of the file can confirm it was stored.
 - **Con:** The admin check reads `memberships`, so a new admin waits for the next `permsync` cycle, and so does a removed one (ADR 0002's window applies to writes too).
 - **Con:** Each chunk write now does one extra primary-key lookup on `documents` in the trigger.
 - **Note:** The unique index is per tenant. Like the other unique keys (ADR 0004), it can't reveal another tenant's documents.

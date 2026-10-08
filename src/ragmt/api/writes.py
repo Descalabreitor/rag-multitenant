@@ -1,4 +1,5 @@
-"""Document writes: upload, ACL changes and deletes, for tenant admins only (ADR 0008).
+"""Document writes: upload, new content, ACL changes and deletes, for tenant admins only
+(ADR 0008).
 
 Every route gets its writer through `UploadWriter` or `DocumentWriter`, and both
 resolve the admin check first: it reads the caller's own memberships on the
@@ -10,6 +11,7 @@ Status codes:
 - Routes with a document id answer a non-admin, another tenant's id, an unknown
   id and a deleted id with the same 404 as `GET /documents/{id}`, so a caller
   can't learn that an id exists.
+- 409 when new content is byte-identical to another live document of the tenant.
 - 413 too large, 415 not a supported document, 422 bad form or ACL, 503 when
   the embedding service is down.
 
@@ -20,6 +22,8 @@ ignored. Embeddings are never returned.
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -31,12 +35,18 @@ from ragmt.api.documents import NOT_FOUND
 from ragmt.api.uploads import (
     MalformedUploadError,
     NotMultipartError,
+    UploadForm,
     UploadTooLargeError,
     read_upload_form,
 )
 from ragmt.auth.dependencies import get_principal
 from ragmt.domain import DocumentTooLargeError, IngestError, Principal, UnsupportedDocumentError
-from ragmt.ingest.service import DocumentNotFoundError, InvalidAclError
+from ragmt.ingest.service import (
+    DocumentNotFoundError,
+    DuplicateDocumentError,
+    IngestResult,
+    InvalidAclError,
+)
 from ragmt.tenancy import TenantConn
 from ragmt.tenancy.admin import is_tenant_admin
 from ragmt.tenancy.writer import IngestServiceDep, TenantWriter
@@ -51,6 +61,7 @@ UNSUPPORTED = "Unsupported document type"
 NOT_MULTIPART = "Expected multipart/form-data"
 INVALID_UPLOAD = "Invalid upload"
 INVALID_ACL = "Invalid ACL"
+DUPLICATE = "Another document has the same content"
 EMBEDDINGS_UNAVAILABLE = "Embedding service unavailable"
 
 
@@ -120,27 +131,22 @@ class DocumentAcl(BaseModel):
 
 
 # FastAPI can't describe a body the route reads itself, so Swagger gets it here.
-_UPLOAD_BODY: dict[str, Any] = {
-    "requestBody": {
-        "required": True,
-        "content": {
-            "multipart/form-data": {
-                "schema": {
-                    "type": "object",
-                    "required": ["file"],
-                    "properties": {
-                        "file": {"type": "string", "format": "binary"},
-                        "acl": {
-                            "type": "string",
-                            "description": 'JSON list of principals, e.g. ["group:hr"]. '
-                            "Without it, only the uploader can read the document.",
-                        },
-                    },
-                }
-            }
-        },
+def _multipart_body(**fields: dict[str, str]) -> dict[str, Any]:
+    properties = {"file": {"type": "string", "format": "binary"}, **fields}
+    schema = {"type": "object", "required": ["file"], "properties": properties}
+    return {
+        "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": schema}}}
     }
-}
+
+
+_UPLOAD_BODY = _multipart_body(
+    acl={
+        "type": "string",
+        "description": 'JSON list of principals, e.g. ["group:hr"]. '
+        "Without it, only the uploader can read the document.",
+    }
+)
+_CONTENT_BODY = _multipart_body()
 
 
 # --- routes ------------------------------------------------------------------------------
@@ -157,42 +163,38 @@ _UPLOAD_BODY: dict[str, Any] = {
     },
 )
 async def upload_document(request: Request, writer: UploadWriter) -> UploadResult:
-    try:
-        form = await read_upload_form(
-            request.headers.get("content-type"),
-            request.headers.get("content-length"),
-            request.stream(),
-            writer.max_bytes,
-        )
-    except NotMultipartError:
-        raise _error(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, NOT_MULTIPART) from None
-    except UploadTooLargeError as exc:
-        logger.info("upload rejected: %s", exc)
-        raise _error(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LARGE) from None
-    except MalformedUploadError as exc:
-        logger.info("upload rejected: %s", exc)
-        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_UPLOAD) from None
-
+    form = await _read_form(request, writer.max_bytes)
     acl = _parse_acl(form.acl)
-    try:
+    with _write_errors():
         result = await writer.ingest(form.data, form.filename, acl)
-    except DocumentTooLargeError:
-        raise _error(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LARGE) from None
-    except UnsupportedDocumentError as exc:
-        # `reason` is ours; the filename is the caller's and stays out of the log.
-        logger.info("upload rejected: %s", exc.reason)
-        raise _error(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, UNSUPPORTED) from None
-    except InvalidAclError:
-        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_ACL) from None
-    except EmbeddingError as exc:
-        logger.warning("embedding failed during upload: %s", type(exc).__name__)
-        raise _error(status.HTTP_503_SERVICE_UNAVAILABLE, EMBEDDINGS_UNAVAILABLE) from None
-    except IngestError as exc:
-        logger.info("upload rejected: %s", type(exc).__name__)
-        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_UPLOAD) from None
-    return UploadResult(
-        id=result.document_id, title=result.title, chunks=result.chunks, unchanged=result.unchanged
-    )
+    return _upload_result(result)
+
+
+@router.put(
+    "/{document_id}/content",
+    openapi_extra=_CONTENT_BODY,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": NOT_FOUND},
+        status.HTTP_409_CONFLICT: {"description": DUPLICATE},
+        status.HTTP_413_CONTENT_TOO_LARGE: {"description": TOO_LARGE},
+        status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"description": UNSUPPORTED},
+    },
+)
+async def replace_document_content(
+    document_id: UUID, request: Request, writer: DocumentWriter
+) -> UploadResult:
+    """Give the document new content. Its chunks and title are rebuilt from the
+    file; its ACL stays as it is (change it with `PUT /documents/{id}/acl`).
+
+    The same bytes as now are 200 with `unchanged: true` and write nothing.
+    """
+    form = await _read_form(request, writer.max_bytes)
+    if form.acl is not None:
+        # Replacing content never touches the ACL; refuse rather than ignore it.
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_UPLOAD)
+    with _write_errors():
+        result = await writer.replace(document_id, form.data, form.filename)
+    return _upload_result(result)
 
 
 @router.put(
@@ -232,6 +234,56 @@ async def delete_document(
     except DocumentNotFoundError:
         raise _error(status.HTTP_404_NOT_FOUND, NOT_FOUND) from None
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _read_form(request: Request, max_bytes: int) -> UploadForm:
+    """The multipart body, read from the stream with the caps of `read_upload_form`."""
+    try:
+        return await read_upload_form(
+            request.headers.get("content-type"),
+            request.headers.get("content-length"),
+            request.stream(),
+            max_bytes,
+        )
+    except NotMultipartError:
+        raise _error(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, NOT_MULTIPART) from None
+    except UploadTooLargeError as exc:
+        logger.info("upload rejected: %s", exc)
+        raise _error(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LARGE) from None
+    except MalformedUploadError as exc:
+        logger.info("upload rejected: %s", exc)
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_UPLOAD) from None
+
+
+@contextmanager
+def _write_errors() -> Iterator[None]:
+    """Map the service's errors on an upload or a replace to fixed HTTP errors."""
+    try:
+        yield
+    except DocumentNotFoundError:
+        raise _error(status.HTTP_404_NOT_FOUND, NOT_FOUND) from None
+    except DuplicateDocumentError:
+        raise _error(status.HTTP_409_CONFLICT, DUPLICATE) from None
+    except DocumentTooLargeError:
+        raise _error(status.HTTP_413_CONTENT_TOO_LARGE, TOO_LARGE) from None
+    except UnsupportedDocumentError as exc:
+        # `reason` is ours; the filename is the caller's and stays out of the log.
+        logger.info("upload rejected: %s", exc.reason)
+        raise _error(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, UNSUPPORTED) from None
+    except InvalidAclError:
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_ACL) from None
+    except EmbeddingError as exc:
+        logger.warning("embedding failed during upload: %s", type(exc).__name__)
+        raise _error(status.HTTP_503_SERVICE_UNAVAILABLE, EMBEDDINGS_UNAVAILABLE) from None
+    except IngestError as exc:
+        logger.info("upload rejected: %s", type(exc).__name__)
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID_UPLOAD) from None
+
+
+def _upload_result(result: IngestResult) -> UploadResult:
+    return UploadResult(
+        id=result.document_id, title=result.title, chunks=result.chunks, unchanged=result.unchanged
+    )
 
 
 def _parse_acl(raw: bytes | None) -> list[str] | None:

@@ -41,6 +41,10 @@ dev = [
     "testcontainers[postgres]>=4.8",
     "ruff>=0.6",
     "mypy>=1.11",
+    # eval/: the synthetic corpus and its exact ground truth.
+    "numpy>=2.0",
+    # eval/report.py: the charts in docs/results/.
+    "matplotlib>=3.9",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -65,7 +69,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ragmt", "seed", "tests"]
+known-first-party = ["ragmt", "seed", "eval", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # assert is how pytest works
@@ -75,7 +79,7 @@ known-first-party = ["ragmt", "seed", "tests"]
 # --- mypy ----------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "seed"]
+files = ["src", "seed", "eval"]
 strict = true
 plugins = ["pydantic.mypy"]
 

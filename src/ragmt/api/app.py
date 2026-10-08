@@ -13,7 +13,8 @@ once here and checked against EMBEDDING_DIM before the app accepts requests:
 startup fails if it is unreachable or answers with vectors of another size.
 The chat provider is built once too, but not contacted: a chat model that is
 down only fails `POST /ask` (503), not startup. Both go into the `AskService`
-on the app_rw engine (ADR 0009).
+on the app_rw engine (ADR 0009). The token validator and its JWKS HTTP client
+live here too (ADR 0006): one per app, closed on shutdown.
 
 Run it with `uvicorn --factory ragmt.api.app:create_app`.
 """
@@ -27,6 +28,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from ragmt.adapters.llm import build_chat_provider, build_embedding_provider
 from ragmt.api import ask, audit, documents, health, writes
 from ragmt.ask import AskService
+from ragmt.auth.dependencies import open_token_validator
 from ragmt.retrieval import PgVectorRetriever
 from ragmt.settings import Settings, get_settings
 from ragmt.tenancy.writer import open_writer
@@ -54,7 +56,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.ask_service = AskService(
                 engine, embedder, PgVectorRetriever.from_settings(settings), chat, settings
             )
-            async with open_writer(app, settings, embedder):
+            async with (
+                open_token_validator(app, settings),
+                open_writer(app, settings, embedder),
+            ):
                 yield
         finally:
             app.state.ask_service = None
@@ -64,6 +69,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await engine.dispose()
 
     app = FastAPI(title="ragmt", version="0.1.0", lifespan=lifespan)
+    # Read by ragmt.api.audit: GET /audit serves question text only while this is on.
+    setattr(app.state, audit.SHOW_QUESTION_TEXT_KEY, settings.audit_store_query_text)
     app.include_router(health.router)
     app.include_router(documents.router)
     app.include_router(writes.router)
