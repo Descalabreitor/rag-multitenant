@@ -1,0 +1,18 @@
+# Optional override: run Ollama on an NVIDIA GPU.
+#
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d
+#   make e2e GPU=1        (also quality, demo)
+#
+# Needs GPU support in Docker: built into Docker Desktop with the WSL 2 backend on
+# Windows, the NVIDIA Container Toolkit on Linux. Pass the same files to every
+# compose command while it runs, or compose recreates Ollama without the GPU.
+# compose.yaml stays GPU-free so CI and machines without one work unchanged.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

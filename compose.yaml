@@ -107,14 +107,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
-    # Uncomment to use an NVIDIA GPU (requires the NVIDIA Container Toolkit).
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # NVIDIA GPU: add the compose.gpu.yaml override (`make e2e GPU=1`, or
+    # `docker compose -f compose.yaml -f compose.gpu.yaml up -d`).
 
   # One-shot: pulls the configured models, then exits. Re-runs are cheap (cached).
   ollama-pull:

@@ -33,6 +33,7 @@ uploads/
 eval/runs/
 eval/.cache/
 docs/results/raw/
+.demo-frames/
 seed/generated/
 *.parquet
 *.jsonl.gz

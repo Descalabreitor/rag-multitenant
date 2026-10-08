@@ -6,7 +6,7 @@ Run `20261007T222210Z` (raw output in `docs/results/raw/quality-20261007T222210Z
 
 ## Setup
 
-- **Host:** AMD Ryzen 7 260, 16 logical CPUs, 31.3 GiB RAM, Windows 11; Docker Desktop. Ollama 0.35.1 in the compose container, **CPU only** (the GPU block in `compose.yaml` stays commented out).
+- **Host:** AMD Ryzen 7 260, 16 logical CPUs, 31.3 GiB RAM, Windows 11; Docker Desktop. Ollama 0.35.1 in the compose container, **CPU only** (run without the `compose.gpu.yaml` override, so the laptop's RTX 5060 was not used).
 - **Service:** the API started by the runner with `LLM_PROVIDER=ollama`, `CHAT_PROVIDER=ollama`, `CHAT_TIMEOUT_SECONDS=300`; everything else from `.env` at its defaults: `RETRIEVAL_K=5`, `HNSW_EF_SEARCH=40`, `HNSW_ITERATIVE_SCAN=relaxed_order`, `ASK_MAX_CONTEXT_CHARS=12000`. The prompt is the one in `ragmt.generation` (ADR 0009), temperature 0.
 - **Models:** embeddings `nomic-embed-text` (768 dims), chat `llama3.1:8b` (Q4_K_M).
 - **Corpus:** the seed (`seed/corpus.py`): Acme (4 documents, 10 chunks) and Umbra (3 documents, 7 chunks). The runner hard-deletes the seed tenants' documents and loads them again with Ollama embeddings first. The seed deduplicates by file hash, so a seed that was loaded with fake vectors (CI, e2e) would otherwise keep them.

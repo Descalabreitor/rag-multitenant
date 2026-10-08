@@ -6,7 +6,7 @@ A retrieval-augmented generation service for multiple organizations, where **no 
 
 ## Results
 
-All numbers come from one laptop (AMD Ryzen 7 260, Docker Desktop, CPU only) and are reproduced by the `make` targets under [Reproduce](#reproduce).
+All numbers come from one laptop (AMD Ryzen 7 260, 32 GB, Docker Desktop) and are reproduced by the `make` targets under [Reproduce](#reproduce). The laptop has an RTX 5060, but the model runs behind these numbers were CPU only; `GPU=1` runs Ollama on the GPU.
 
 | Question | Answer | Source |
 |---|---|---|
@@ -186,7 +186,7 @@ Each decision is an ADR in [`docs/adr/`](docs/adr/) with context, alternatives a
 
 ## Reproduce
 
-Requirements: Docker with Compose, conda (or any Python 3.12 environment) and `make` (Git Bash or WSL on Windows).
+Requirements: Docker with Compose, conda (or any Python 3.12 environment) and `make`. On Windows, run the targets from Git Bash, which has no `make` of its own: `winget install ezwinports.make`.
 
 ```bash
 cp .env.example .env                  # local placeholders
@@ -206,7 +206,7 @@ pytest                                # unit + db + leak tests (e2e is skipped w
 | `make e2e` | The end-to-end suite against real Keycloak tokens and Ollama (`FAKE_CHAT=1` skips the chat model) | the whole stack |
 | `make demo` | `docs/demo.gif`, recorded with [VHS](https://github.com/charmbracelet/vhs) from [`docs/demo/demo.tape`](docs/demo/demo.tape) | the whole stack, `vhs` (see [`docs/demo/demo.tape`](docs/demo/demo.tape)) |
 
-Raw runs go to `docs/results/raw/` (git-ignored). CI runs ruff, mypy, gitleaks and pytest against the same `postgres` service from `compose.yaml` (migrations are also downgraded to base and upgraded again). Every night it runs the leak suite with the `nightly` profile and the e2e suite with FakeChat; the benchmarks are local only.
+With an NVIDIA GPU, add `GPU=1` to the targets that use Ollama (`make e2e GPU=1`, `make quality GPU=1`, `make demo GPU=1`), or pass the override to compose yourself: `docker compose -f compose.yaml -f compose.gpu.yaml up -d`. Docker Desktop on Windows supports this out of the box; Linux needs the NVIDIA Container Toolkit. Raw runs go to `docs/results/raw/` (git-ignored). CI runs ruff, mypy, gitleaks and pytest against the same `postgres` service from `compose.yaml` (migrations are also downgraded to base and upgraded again). Every night it runs the leak suite with the `nightly` profile and the e2e suite with FakeChat; the benchmarks are local only.
 
 ## Try it
 
@@ -227,7 +227,7 @@ ragctl --dev-user dave  ask "Summarise the budget."
 ragctl --dev-user erin  ask "Summarise the budget."
 ```
 
-Each answer ends with its sources. Alice's can only be Acme's *Q3 budget*, dave's only Umbra's *Annual budget*, and erin's only the tenant-wide *Employee handbook*, which has no budget, so she gets "I don't know" or an answer from the handbook. An earlier run of alice's question:
+When the model cites, the answer ends with its sources (an 8B model sometimes answers without a marker, and then no source is listed). Alice's can only be Acme's *Q3 budget*, dave's only Umbra's *Annual budget*, and erin's only the tenant-wide *Employee handbook*, which has no budget, so she gets "I don't know" or an answer from the handbook. An earlier run of alice's question:
 
 ```text
 The fleet budget for Q3 is **1.2 million credits**, of which 300,000 go to

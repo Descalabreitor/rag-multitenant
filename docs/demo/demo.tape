@@ -2,26 +2,37 @@
 #
 # Recorded with VHS (https://github.com/charmbracelet/vhs), which needs ttyd and
 # ffmpeg on PATH. `make demo` brings the stack up, seeds it, starts the API on
-# DEMO_PORT and runs `vhs docs/demo/demo.tape` with RAGMT_API_URL pointing at it.
-# Run from the repository root: the output path is relative to it.
+# DEMO_PORT and runs VHS on this tape with RAGMT_API_URL pointing at it and
+# KC_DEMO_USER_PASSWORD taken from .env. Run from the repository root: the output
+# path is relative to it.
+#
+# The commands typed below are the same in bash and PowerShell. `make demo`
+# replaces the Set Shell line with DEMO_SHELL: on Windows, "bash" would start
+# System32's WSL bash.exe rather than Git Bash.
+#
+# `make demo` also replaces the Output line: VHS 0.12 on Windows writes no GIF, so
+# it records PNG frames and ffmpeg encodes docs/demo.gif from them (DEMO_FRAMERATE
+# in the Makefile must match Set Framerate below). `vhs docs/demo/demo.tape` alone
+# writes the GIF where VHS's own encoder works.
 #
 # Dev only: --dev-user gets a password-grant token from the ragmt-dev-password
-# client, with KC_DEMO_USER_PASSWORD read from .env. Nothing is stored.
+# client. Nothing is stored.
 
 Output docs/demo.gif
 
 Require ragctl
 
 Set Shell "bash"
-Set FontSize 15
+Set Framerate 20
+Set FontSize 22
 Set Width 1280
-Set Height 760
+Set Height 420
 Set Padding 20
 Set TypingSpeed 35ms
 Set Theme "Builtin Dark"
 
 Hide
-Type "export PS1='> ' KC_DEMO_USER_PASSWORD=$(grep '^KC_DEMO_USER_PASSWORD=' .env | cut -d= -f2-) && clear"
+Type "clear"
 Enter
 Sleep 1s
 Show

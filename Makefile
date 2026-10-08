@@ -16,6 +16,18 @@ E2E_CHAT_TIMEOUT ?= 300
 E2E_RETRIEVAL_K ?= 10
 # Port of the API that `make demo` starts.
 DEMO_PORT ?= 8002
+# The shell `make demo` records in. On Windows, VHS's "bash" resolves to System32's
+# WSL bash.exe before Git Bash, so the default there is Windows PowerShell.
+DEMO_SHELL ?= $(if $(filter Windows_NT,$(OS)),powershell,bash)
+# VHS 0.12 on Windows records the frames but silently writes no GIF, so `make demo`
+# has it write PNG frames here (Set Framerate in the tape) and encodes them with ffmpeg.
+DEMO_FRAMES := .demo-frames
+DEMO_FRAMERATE := 20
+# `make e2e GPU=1` (also quality, demo): run Ollama on an NVIDIA GPU through the
+# compose.gpu.yaml override. Keep passing GPU=1 while Ollama runs on the GPU: a
+# compose call without the override recreates the container on the CPU.
+GPU ?=
+COMPOSE := docker compose$(if $(GPU), -f compose.yaml -f compose.gpu.yaml)
 
 .DEFAULT_GOAL := help
 .PHONY: help migrate seed permsync e2e revocation eval quality leaks demo
@@ -41,8 +53,8 @@ permsync: ## Sync Keycloak groups into memberships, as app_ingest (ARGS=--once f
 # corpus and run permsync once themselves. The pull reads OLLAMA_EMBED_MODEL and
 # OLLAMA_CHAT_MODEL from .env, as the API does.
 e2e: ## End-to-end check against the real stack: Keycloak + PostgreSQL + Ollama + the API (FAKE_CHAT=1: no chat model)
-	docker compose up -d --wait --wait-timeout 300 postgres keycloak ollama
-	docker compose run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL"$(if $(FAKE_CHAT),, && ollama pull "$$OLLAMA_CHAT_MODEL")'
+	$(COMPOSE) up -d --wait --wait-timeout 300 postgres keycloak ollama
+	$(COMPOSE) run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL"$(if $(FAKE_CHAT),, && ollama pull "$$OLLAMA_CHAT_MODEL")'
 	alembic upgrade head
 	export LLM_PROVIDER=ollama CHAT_PROVIDER=$(E2E_CHAT_PROVIDER) \
 	  CHAT_TIMEOUT_SECONDS=$(E2E_CHAT_TIMEOUT) RETRIEVAL_K=$(E2E_RETRIEVAL_K); \
@@ -56,7 +68,7 @@ e2e: ## End-to-end check against the real stack: Keycloak + PostgreSQL + Ollama 
 # the summary to docs/results/revocation.md. Not run in CI. The compose permsync
 # service must be stopped. ARGS passes options, e.g. ARGS="--runs 5 --intervals 10".
 revocation: ## Measure the revocation window against the real stack (Keycloak + PostgreSQL; no Ollama)
-	docker compose up -d --wait --wait-timeout 300 postgres keycloak
+	$(COMPOSE) up -d --wait --wait-timeout 300 postgres keycloak
 	alembic upgrade head
 	$(PYTHON) -m eval.revocation $(ARGS)
 
@@ -69,7 +81,7 @@ revocation: ## Measure the revocation window against the real stack (Keycloak + 
 # (or EVAL_SUPERUSER_DATABASE_URL) for the no-RLS baseline. Not run in CI.
 # ARGS passes options, e.g. ARGS="--reps 3 --variants hnsw_off hnsw_relaxed".
 eval: ## Retrieval benchmarks (recall, latency) on the synthetic corpus; no Ollama
-	docker compose up -d --wait postgres
+	$(COMPOSE) up -d --wait postgres
 	$(PYTHON) -m eval.bench $(ARGS)
 	$(PYTHON) -m eval.report
 
@@ -81,8 +93,8 @@ eval: ## Retrieval benchmarks (recall, latency) on the synthetic corpus; no Olla
 # says otherwise. Raw runs go to docs/results/raw/ (git-ignored); the summary to
 # docs/results/quality.md. Not run in CI. ARGS passes options, e.g. ARGS="--users erin".
 quality: ## Answer-quality baseline on the seed corpus (Keycloak + PostgreSQL + Ollama)
-	docker compose up -d --wait --wait-timeout 300 postgres keycloak ollama
-	docker compose run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL" && ollama pull "$$OLLAMA_CHAT_MODEL"'
+	$(COMPOSE) up -d --wait --wait-timeout 300 postgres keycloak ollama
+	$(COMPOSE) run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL" && ollama pull "$$OLLAMA_CHAT_MODEL"'
 	alembic upgrade head
 	$(PYTHON) -m eval.quality $(ARGS)
 
@@ -92,7 +104,7 @@ quality: ## Answer-quality baseline on the seed corpus (Keycloak + PostgreSQL + 
 # count ("0 leaks in N attempts"), or says the run failed. Rows are left behind,
 # as in the rest of the leak suite: `docker compose down -v` starts afresh.
 leaks: ## Leak suite with the nightly Hypothesis profile, written to docs/results/leaks.md (PostgreSQL only)
-	docker compose up -d --wait --wait-timeout 120 postgres
+	$(COMPOSE) up -d --wait --wait-timeout 120 postgres
 	alembic upgrade head
 	HYPOTHESIS_PROFILE=nightly LEAKS_REPORT=docs/results/leaks.md $(PYTHON) -m pytest -m leaks
 
@@ -104,8 +116,8 @@ leaks: ## Leak suite with the nightly Hypothesis profile, written to docs/result
 # read, so every answer sees all of the user's readable chunks whatever the seed was
 # embedded with, and the sources shown follow from the ACLs alone.
 demo: ## Record docs/demo.gif with VHS (the whole stack; vhs, ttyd and ffmpeg installed)
-	docker compose up -d --wait --wait-timeout 300 postgres keycloak ollama
-	docker compose run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL" && ollama pull "$$OLLAMA_CHAT_MODEL"'
+	$(COMPOSE) up -d --wait --wait-timeout 300 postgres keycloak ollama
+	$(COMPOSE) run --rm --entrypoint sh ollama-pull -c 'ollama pull "$$OLLAMA_EMBED_MODEL" && ollama pull "$$OLLAMA_CHAT_MODEL"'
 	alembic upgrade head
 	LLM_PROVIDER=ollama $(PYTHON) -m seed
 	$(PYTHON) -m ragmt.permsync --once
@@ -115,4 +127,16 @@ demo: ## Record docs/demo.gif with VHS (the whole stack; vhs, ttyd and ffmpeg in
 	api=$$!; trap 'kill $$api' EXIT; \
 	until curl -sf http://127.0.0.1:$(DEMO_PORT)/healthz >/dev/null; do \
 	  kill -0 $$api 2>/dev/null || exit 1; sleep 1; done; \
-	RAGMT_API_URL=http://127.0.0.1:$(DEMO_PORT) vhs docs/demo/demo.tape
+	tape=$$(mktemp --suffix=.tape); trap 'kill $$api; rm -rf "$$tape" $(DEMO_FRAMES)' EXIT; \
+	rm -rf $(DEMO_FRAMES); \
+	sed -e 's/^Set Shell .*/Set Shell "$(DEMO_SHELL)"/' -e 's|^Output .*|Output $(DEMO_FRAMES)/|' \
+	  docs/demo/demo.tape > "$$tape"; \
+	KC_DEMO_USER_PASSWORD=$${KC_DEMO_USER_PASSWORD:-$$(grep '^KC_DEMO_USER_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')} \
+	RAGMT_API_URL=http://127.0.0.1:$(DEMO_PORT) vhs "$$tape" && \
+	test -n "$$(ls $(DEMO_FRAMES))" && \
+	ffmpeg -hide_banner -loglevel error -y \
+	  -framerate $(DEMO_FRAMERATE) -start_number 1 -i $(DEMO_FRAMES)/frame-text-%05d.png \
+	  -framerate $(DEMO_FRAMERATE) -start_number 1 -i $(DEMO_FRAMES)/frame-cursor-%05d.png \
+	  -filter_complex "[0][1]overlay,pad=iw+40:ih+40:20:20:color=0x171717,fps=10,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none" \
+	  docs/demo.gif && \
+	ls -l docs/demo.gif
